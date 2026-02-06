@@ -1,43 +1,48 @@
 # @novadxhq/sveltekit-inngest
 
-Svelte 5 utilities for building typed realtime subscriptions in SvelteKit with Inngest and SSE.
+`@novadxhq/sveltekit-inngest` gives you typed realtime subscriptions in SvelteKit using Inngest + SSE. It pairs a small client manager with a server endpoint helper so your topic payloads, health state, and authorization flow all line up.
 
-## What This Library Provides
+It is built for Svelte 5 and leans into state-first reads (`.current`) instead of store syntax.
 
-- A client manager component (`RealtimeManager`) that owns the SSE connection.
-- State-first client helpers (`getRealtimeState`, `getRealtimeTopicState`) for Svelte 5 `.current` reads.
-- A server helper (`createRealtimeEndpoint`) that creates a `POST` SSE endpoint using `sveltekit-sse`.
-- Typed topic payloads based on your `@inngest/realtime` channel definitions.
-- Built-in connection health events (`connecting`, `connected`, `degraded`).
+## Features
+
+- **Typed topic payloads** - Topic types come from your `@inngest/realtime` channel definitions.
+- **Svelte 5 state-first API** - Read health and topic data through `getRealtimeState()` and `getRealtimeTopicState()`.
+- **Single server helper** - `createRealtimeEndpoint()` handles request parsing, topic checks, authorization, and SSE wiring.
+- **Built-in health events** - Streams `connecting`, `connected`, and `degraded` lifecycle updates.
+- **Topic-level authorization** - Return `{ allowedTopics }` from `authorize` to scope subscriptions per request.
+- **Compatibility helpers included** - `getRealtime()` and `getRealtimeTopicJson()` are still available for store-based usage.
 
 ## Requirements
 
-This package is for **Svelte 5 + SvelteKit** projects.
+This package is intended for **Svelte 5 + SvelteKit** projects and expects these peer dependencies:
 
-Your app must already include these peer dependencies:
-
-- `svelte` (v5)
+- `svelte`
 - `@sveltejs/kit`
 - `sveltekit-sse`
 - `@inngest/realtime`
 - `inngest`
 
-## Install
+## Installation
 
-```sh
+```bash
+pnpm add @novadxhq/sveltekit-inngest
+# or
 npm install @novadxhq/sveltekit-inngest
+# or
+bun add @novadxhq/sveltekit-inngest
 ```
 
-## Quick Start (End-to-End)
+## How to Use
 
-### 1. Define your channel and topic
+### 1. Define your channel and topics
 
 ```ts
 // src/lib/realtime/orders-channel.ts
 import { channel, topic } from "@inngest/realtime";
 import { z } from "zod";
 
-export const ordersUpdatedTopic = topic("orders.updated").schema(
+const ordersUpdatedTopic = topic("orders.updated").schema(
 	z.object({
 		orderId: z.string(),
 		status: z.string(),
@@ -47,13 +52,13 @@ export const ordersUpdatedTopic = topic("orders.updated").schema(
 export const ordersChannel = channel("orders").addTopic(ordersUpdatedTopic);
 ```
 
-### 2. Create the realtime endpoint
+### 2. Create the realtime SSE endpoint
 
 ```ts
 // src/routes/api/events/+server.ts
 import { createRealtimeEndpoint } from "@novadxhq/sveltekit-inngest/server";
-import { inngest } from "$lib/server/inngest";
 import { ordersChannel } from "$lib/realtime/orders-channel";
+import { inngest } from "$lib/server/inngest";
 
 export const POST = createRealtimeEndpoint({
 	inngest,
@@ -61,12 +66,9 @@ export const POST = createRealtimeEndpoint({
 	healthCheck: {
 		intervalMs: 5_000,
 	},
-	authorize: ({ event, locals, topics, params }) => {
-		// You have full RequestEvent access here.
-		// Example: block unauthenticated users.
+	authorize: ({ locals, topics, params }) => {
 		if (!locals.user) return false;
 
-		// Example: optionally filter allowed topics.
 		if (params?.scope === "limited") {
 			return {
 				allowedTopics: topics.filter((topic) => topic === "orders.updated"),
@@ -78,7 +80,7 @@ export const POST = createRealtimeEndpoint({
 });
 ```
 
-### 3. Wrap your UI with `RealtimeManager`
+### 3. Wrap UI with `RealtimeManager`
 
 ```svelte
 <!-- src/routes/+page.svelte -->
@@ -93,7 +95,7 @@ export const POST = createRealtimeEndpoint({
 </RealtimeManager>
 ```
 
-### 4. Read topic state in a child component
+### 4. Read health and topic state in child components
 
 ```svelte
 <!-- src/routes/OrdersPanel.svelte -->
@@ -102,7 +104,7 @@ export const POST = createRealtimeEndpoint({
 	import { ordersChannel } from "$lib/realtime/orders-channel";
 
 	const { health } = getRealtimeState();
-	const orderUpdated = getRealtimeTopicState<typeof ordersChannel, "orders.updated">(
+	const ordersUpdated = getRealtimeTopicState<typeof ordersChannel, "orders.updated">(
 		"orders.updated"
 	);
 </script>
@@ -115,49 +117,14 @@ export const POST = createRealtimeEndpoint({
 	{/if}
 </p>
 
-{#if orderUpdated.current}
-	<pre>{JSON.stringify(orderUpdated.current, null, 2)}</pre>
+{#if ordersUpdated.current}
+	<pre>{JSON.stringify(ordersUpdated.current, null, 2)}</pre>
 {/if}
 ```
 
-## Client API
+### 5. Return only `data` when you do not need the full envelope
 
-### `RealtimeManager`
-
-Wraps children and provides realtime context to descendant components.
-
-Common props:
-
-- `endpoint`: SSE endpoint path (default: `"/api/events"`).
-- `channel`: `Realtime.Channel` or channel definition.
-- `channelArgs`: args for channel definitions that are factories.
-- `topics`: optional subset of topic names.
-- `params`: optional metadata sent to server authorize logic.
-
-### `getRealtimeState()`
-
-Returns state-first manager context:
-
-- `health.current`: current health payload (`ok`, `status`, `ts`, optional `detail`).
-- `channelId`, `topics`, `select` for lower-level usage.
-
-### `getRealtimeTopicState(topic, options?)`
-
-Returns a state wrapper (`.current`) for a topic stream.
-
-By default, `.current` is the **full Inngest message envelope**, including fields like:
-
-- `topic`
-- `data`
-- `runId`
-- `createdAt`
-- `kind`
-- `envId`
-- `fnId`
-
-`createdAt` is a string on the client because SSE payloads are JSON-parsed.
-
-If you only want `data`, map it:
+By default, `getRealtimeTopicState()` returns the full Inngest envelope (`topic`, `data`, `runId`, `createdAt`, and more). If you only want the payload, map it:
 
 ```ts
 const payloadOnly = getRealtimeTopicState<
@@ -169,35 +136,141 @@ const payloadOnly = getRealtimeTopicState<
 });
 ```
 
-## Server API
+## API
+
+### `<RealtimeManager />`
+
+Provides realtime context to descendants and owns the client SSE connection.
+
+#### `endpoint`
+
+SSE route path. Default: `"/api/events"`.
+
+---
+
+#### `channel`
+
+`Realtime.Channel` or channel definition from `@inngest/realtime`.
+
+---
+
+#### `channelArgs`
+
+Optional argument list for channel definition factories.
+
+---
+
+#### `topics`
+
+Optional explicit topic subset. If omitted, all channel topics are requested.
+
+---
+
+#### `params`
+
+Optional scalar metadata sent in the request body and forwarded into `authorize`.
+
+```ts
+type RealtimeRequestParams = Record<string, string | number | boolean | null>;
+```
+
+### `getRealtimeState()`
+
+Returns manager context with Svelte 5 state wrappers:
+
+- `health.current` - current health payload (`ok`, `status`, `ts`, optional `detail`).
+- `channelId`
+- `topics`
+- `select` (low-level `sveltekit-sse` selector access)
+
+### `getRealtimeTopicState(topic, options?)`
+
+Returns a state wrapper (`.current`) for a topic stream.
+
+#### `options.map(message)`
+
+Transforms each parsed message before it is stored.
+
+#### `options.or(payload)`
+
+Fallback parser hook when JSON parsing fails. Receives `{ error, raw, previous }`.
+
+### `getRealtimeTopicJson(topic, options?)`
+
+Store-based variant of `getRealtimeTopicState()` that returns a Svelte `Readable`.
+
+### `getRealtime()`
+
+Returns the raw realtime context (`health` as a `Readable`) and throws if called outside `<RealtimeManager>`.
 
 ### `createRealtimeEndpoint(options)`
 
-Creates a SvelteKit `RequestHandler` for `POST` SSE.
+Creates a SvelteKit `POST` `RequestHandler` that validates input, authorizes topics, subscribes to Inngest realtime, and emits SSE events.
 
-Key options:
+#### `options.inngest`
 
-- `inngest`: your Inngest client instance.
-- `channel`: channel object or channel definition.
-- `channelArgs`: optional static array or resolver `(event) => unknown[]`.
-- `healthCheck`: heartbeat control (`intervalMs`, `enabled`).
-- `authorize`: access control callback per request.
+Your Inngest client instance.
 
-`authorize` receives:
+---
 
-- `event`: full SvelteKit `RequestEvent`.
-- `locals`, `request`, `channelId`, `topics`, `params`.
+#### `options.channel`
 
-`authorize` return values:
+Channel object or channel definition.
 
-- `true`: allow requested topics.
-- `false`: deny request (`403` JSON).
-- `{ allowedTopics }`: allow only a subset of requested topics.
+---
+
+#### `options.channelArgs`
+
+Optional static args or resolver:
+
+```ts
+channelArgs?: unknown[] | ((event: RequestEvent) => unknown[] | Promise<unknown[]>);
+```
+
+---
+
+#### `options.healthCheck`
+
+Controls health tick behavior:
+
+```ts
+healthCheck?: {
+	intervalMs?: number; // default: 5000
+	enabled?: boolean;   // default: true
+};
+```
+
+---
+
+#### `options.authorize(context)`
+
+Optional authorization hook. Useful for auth checks and topic filtering.
+
+`context` includes:
+
+- `event`
+- `locals`
+- `request`
+- `channelId`
+- `topics`
+- `params`
+
+Allowed return values:
+
+- `true` - allow requested topics.
+- `false` - deny request (`403` JSON).
+- `{ allowedTopics }` - allow only the intersection of requested and allowed topics.
+
+---
+
+#### `options.heartbeatMs` (deprecated)
+
+Deprecated alias for heartbeat interval. Prefer `healthCheck.intervalMs`.
 
 ## Behavior and Contracts
 
-- Endpoint method: `POST`.
-- Request body:
+- Endpoint method is `POST`.
+- Request payload:
 
 ```json
 {
@@ -209,29 +282,22 @@ Key options:
 }
 ```
 
-- SSE events emitted by the endpoint:
-  - `message`: realtime message payloads (JSON stringified).
-  - `health`: connection health payloads (JSON stringified).
-- Unauthorized requests return `403` JSON and no SSE stream.
-- Health emits `connecting`, then `connected`, and `degraded` on failures.
-- Heartbeat cadence is configurable via `healthCheck.intervalMs`.
-
-## Compatibility APIs (Concise)
-
-These alternatives are still available if you prefer store-returning helpers:
-
-- `getRealtime()` -> returns context with `health` as a `Readable`.
-- `getRealtimeTopicJson()` -> returns topic stream as a `Readable`.
-
-The recommended Svelte 5 path is `getRealtimeState()` and `getRealtimeTopicState()` with `.current`.
+- SSE events emitted: `message` (realtime payload JSON), `health` (health payload JSON).
+- Unknown topics return `400` JSON.
+- Denied requests return `403` JSON and do not open an SSE stream.
+- Health moves through `connecting`, `connected`, then `degraded` on failures.
 
 ## Troubleshooting
 
-- `getRealtimeState() requires <RealtimeManager>...`
-  - Ensure the component calling it is rendered under `<RealtimeManager>`.
-- Endpoint returns `403`
-  - Check your `authorize` callback and `locals` auth state.
-- No topic messages
-  - Confirm `channel` and topic names match your `@inngest/realtime` definitions.
-- `createdAt` is not a `Date`
-  - It is a string after JSON parsing; convert it in UI when needed.
+- `getRealtimeState() requires <RealtimeManager> in the component tree.`: Ensure the consuming component is rendered under `<RealtimeManager>`.
+- Endpoint returns `403`: Confirm your `authorize` logic and auth state in `locals`.
+- No messages for a topic: Verify channel name and topic names match your `@inngest/realtime` definitions.
+- `createdAt` is not a `Date`: SSE payloads are JSON-parsed, so `createdAt` arrives as a string.
+
+## Contributing
+
+PRs are welcome. Please include a clear explanation of the behavior you are changing and why.
+
+## License
+
+[MIT](./LICENSE)
