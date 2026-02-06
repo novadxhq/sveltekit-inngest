@@ -59,8 +59,24 @@ jobs:
       - name: Verify package
         run: bun run release:verify
 
+      - name: OIDC preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]]; then
+            echo "ACTIONS_ID_TOKEN_REQUEST_URL is missing. OIDC is not available." >&2
+            exit 1
+          fi
+
+          echo "OIDC is available for this workflow run."
+          npm --version
+          npm config get registry
+
       - name: Publish to npmjs
-        run: bun run publish:npm -- --provenance
+        run: npm publish --access public
+        env:
+          NPM_CONFIG_PROVENANCE: "false"
 
       - name: Publish to GitHub Packages
         run: bun run publish:gpr
