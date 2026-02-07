@@ -1,6 +1,5 @@
-# @novadxhq/sveltekit-inngest
-
-`@novadxhq/sveltekit-inngest` gives you typed realtime subscriptions in SvelteKit using Inngest + SSE. It pairs a small client manager with a server endpoint helper so your topic payloads, health state, and authorization flow all line up.
+# sveltekit-inngest
+`sveltekit-inngest` gives you typed realtime subscriptions in SvelteKit using Inngest + SSE. It pairs a small client manager with a server endpoint helper so your topic payloads, health state, and authorization flow all line up.
 
 It is built for Svelte 5 and leans into state-first reads (`.current`) instead of store syntax.
 
@@ -26,11 +25,11 @@ This package is intended for **Svelte 5 + SvelteKit** projects and expects these
 ## Installation
 
 ```bash
-pnpm add @novadxhq/sveltekit-inngest
+pnpm add sveltekit-inngest
 # or
-npm install @novadxhq/sveltekit-inngest
+npm install sveltekit-inngest
 # or
-bun add @novadxhq/sveltekit-inngest
+bun add sveltekit-inngest
 ```
 
 ## How to Use
@@ -56,7 +55,7 @@ export const ordersChannel = channel("orders").addTopic(ordersUpdatedTopic);
 
 ```ts
 // src/routes/api/events/+server.ts
-import { createRealtimeEndpoint } from "@novadxhq/sveltekit-inngest/server";
+import { createRealtimeEndpoint } from "sveltekit-inngest/server";
 import { ordersChannel } from "$lib/realtime/orders-channel";
 import { inngest } from "$lib/server/inngest";
 
@@ -85,7 +84,7 @@ export const POST = createRealtimeEndpoint({
 ```svelte
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
-	import { RealtimeManager } from "@novadxhq/sveltekit-inngest";
+	import { RealtimeManager } from "sveltekit-inngest";
 	import { ordersChannel } from "$lib/realtime/orders-channel";
 	import OrdersPanel from "./OrdersPanel.svelte";
 </script>
@@ -100,7 +99,7 @@ export const POST = createRealtimeEndpoint({
 ```svelte
 <!-- src/routes/OrdersPanel.svelte -->
 <script lang="ts">
-	import { getRealtimeState, getRealtimeTopicState } from "@novadxhq/sveltekit-inngest";
+	import { getRealtimeState, getRealtimeTopicState } from "sveltekit-inngest";
 	import { ordersChannel } from "$lib/realtime/orders-channel";
 
 	const { health } = getRealtimeState();

@@ -5,6 +5,7 @@ export {
 	getRealtimeTopicJson,
 	getRealtimeTopicState,
 } from "./client/hooks.js";
+export { createRealtimeEndpoint } from "./server/createRealtimeEndpoint.js";
 export type {
 	ChannelInput,
 	HealthPayload,
@@ -20,3 +21,8 @@ export type {
 	TopicData,
 	TopicKey,
 } from "./client/types.js";
+export type {
+	RealtimeAuthorizeContext,
+	RealtimeEndpointOptions,
+	RealtimeHealthCheckOptions,
+} from "./server/createRealtimeEndpoint.js";
