@@ -10,3 +10,12 @@ export const triggerInngestDemo = command(z.string(), async (data) => {
     }
   })
 })
+
+export const triggerNestedInngestDemo = command(z.string(), async (data) => {
+  await inngest.send({
+    name: 'demo/nested-realtime',
+    data: {
+      message: data
+    }
+  })
+})

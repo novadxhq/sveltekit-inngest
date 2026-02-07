@@ -84,7 +84,7 @@ export const POST = createRealtimeEndpoint({
 ```svelte
 <!-- src/routes/+page.svelte -->
 <script lang="ts">
-	import { RealtimeManager } from "sveltekit-inngest";
+	import { RealtimeManager } from "sveltekit-inngest/client";
 	import { ordersChannel } from "$lib/realtime/orders-channel";
 	import OrdersPanel from "./OrdersPanel.svelte";
 </script>
@@ -99,7 +99,7 @@ export const POST = createRealtimeEndpoint({
 ```svelte
 <!-- src/routes/OrdersPanel.svelte -->
 <script lang="ts">
-	import { getRealtimeState, getRealtimeTopicState } from "sveltekit-inngest";
+	import { getRealtimeState, getRealtimeTopicState } from "sveltekit-inngest/client";
 	import { ordersChannel } from "$lib/realtime/orders-channel";
 
 	const { health } = getRealtimeState();
@@ -206,65 +206,167 @@ Returns the raw realtime context (`health` as a `Readable`) and throws if called
 
 Creates a SvelteKit `POST` `RequestHandler` that validates input, authorizes topics, subscribes to Inngest realtime, and emits SSE events.
 
-#### `options.inngest`
-
-Your Inngest client instance.
-
----
-
-#### `options.channel`
-
-Channel object or channel definition.
-
----
-
-#### `options.channelArgs`
-
-Optional static args or resolver:
+#### Full options shape
 
 ```ts
-channelArgs?: unknown[] | ((event: RequestEvent) => unknown[] | Promise<unknown[]>);
+createRealtimeEndpoint({
+	inngest, // required
+	channel, // required
+	channelArgs, // optional: unknown[] | (event) => unknown[] | Promise<unknown[]>
+	healthCheck, // optional: { enabled?: boolean; intervalMs?: number }
+	authorize, // optional: ({ event, locals, request, channelId, topics, params }) => ...
+	heartbeatMs, // deprecated compatibility field
+});
 ```
 
----
-
-#### `options.healthCheck`
-
-Controls health tick behavior:
+#### Minimal endpoint (`inngest` + `channel`)
 
 ```ts
-healthCheck?: {
-	intervalMs?: number; // default: 5000
-	enabled?: boolean;   // default: true
+import { createRealtimeEndpoint } from "sveltekit-inngest/server";
+import { inngest } from "$lib/server/inngest";
+import { demoChannel } from "$lib/realtime/channels";
+
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: demoChannel,
+});
+```
+
+#### `channel`: object or factory
+
+`channel` can be either a channel object or a channel factory function.
+
+```ts
+import { channel, topic } from "@inngest/realtime";
+import { z } from "zod";
+
+const messageTopic = topic("message").schema(z.object({ text: z.string() }));
+
+export const orgChannel = (orgId: string) =>
+	channel(`org:${orgId}`).addTopic(messageTopic);
+```
+
+#### `channelArgs`: static args for channel factories
+
+```ts
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: orgChannel,
+	channelArgs: ["acme-org-id"],
+});
+```
+
+#### `channelArgs`: derive args from `RequestEvent`
+
+```ts
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: orgChannel,
+	channelArgs: async (event) => {
+		const orgId = event.locals.user?.orgId ?? "";
+		return [orgId];
+	},
+});
+```
+
+#### `authorize(context)`: allow all
+
+```ts
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: demoChannel,
+	authorize: () => true,
+});
+```
+
+#### `authorize(context)`: deny request
+
+```ts
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: demoChannel,
+	authorize: ({ locals }) => !!locals.user, // false -> 403 { error: "Forbidden" }
+});
+```
+
+#### `authorize(context)`: allow only some topics
+
+```ts
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: demoChannel,
+	authorize: ({ topics, params, locals }) => {
+		if (!locals.user) return false;
+		if (params?.scope !== "limited") return true;
+
+		return {
+			allowedTopics: topics.filter((topic) => topic === "message"),
+		};
+	},
+});
+```
+
+`authorize` context contains:
+
+- `event`: full SvelteKit `RequestEvent`
+- `locals`: typed locals (generic `TLocals`)
+- `request`: raw `Request`
+- `channelId`: resolved channel name
+- `topics`: requested topics after channel validation
+- `params`: scalar request metadata (`string | number | boolean | null`)
+
+If `authorize` throws, the endpoint responds with `403` and the thrown error message.
+
+Typed `locals` example:
+
+```ts
+type LocalUser = {
+	id: string;
+	role: "admin" | "member";
 };
+
+export const POST = createRealtimeEndpoint<typeof demoChannel, App.Locals & { user?: LocalUser }>({
+	inngest,
+	channel: demoChannel,
+	authorize: ({ locals }) => locals.user?.role === "admin",
+});
 ```
 
----
+#### `healthCheck`: default, custom interval, disabled
 
-#### `options.authorize(context)`
+Default behavior (when omitted):
 
-Optional authorization hook. Useful for auth checks and topic filtering.
+- `enabled: true`
+- `intervalMs: 5000`
 
-`context` includes:
+Custom interval:
 
-- `event`
-- `locals`
-- `request`
-- `channelId`
-- `topics`
-- `params`
+```ts
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: demoChannel,
+	healthCheck: {
+		intervalMs: 10_000,
+	},
+});
+```
 
-Allowed return values:
+Disable periodic ticks (connection lifecycle events still emit):
 
-- `true` - allow requested topics.
-- `false` - deny request (`403` JSON).
-- `{ allowedTopics }` - allow only the intersection of requested and allowed topics.
+```ts
+export const POST = createRealtimeEndpoint({
+	inngest,
+	channel: demoChannel,
+	healthCheck: {
+		enabled: false,
+		// intervalMs: 0 also disables periodic ticks
+	},
+});
+```
 
----
+#### `heartbeatMs` (deprecated)
 
-#### `options.heartbeatMs` (deprecated)
-
-Deprecated alias for heartbeat interval. Prefer `healthCheck.intervalMs`.
+`heartbeatMs` is kept for compatibility and should be treated as deprecated/no-op. Use `healthCheck.intervalMs` for new code.
 
 ## Behavior and Contracts
 
@@ -281,10 +383,65 @@ Deprecated alias for heartbeat interval. Prefer `healthCheck.intervalMs`.
 }
 ```
 
+- `topics` is optional. If omitted or empty, all topics from the resolved channel are used.
+- `params` is optional. Only scalar values are retained (`string`, `number`, `boolean`, `null`).
 - SSE events emitted: `message` (realtime payload JSON), `health` (health payload JSON).
 - Unknown topics return `400` JSON.
 - Denied requests return `403` JSON and do not open an SSE stream.
 - Health moves through `connecting`, `connected`, then `degraded` on failures.
+
+#### Validation and error responses
+
+Invalid JSON/body shape:
+
+```json
+{ "error": "Invalid request body" }
+```
+
+Missing `channel`:
+
+```json
+{ "error": "Missing channel" }
+```
+
+Requested channel does not match configured channel:
+
+```json
+{ "error": "Requested channel is not available" }
+```
+
+Requested topics include unknown topic names:
+
+```json
+{
+	"error": "Requested topics are not available",
+	"invalidTopics": ["unknown.topic"]
+}
+```
+
+Denied/filtered to zero topics:
+
+```json
+{ "error": "Forbidden" }
+```
+
+#### SSE payload examples
+
+Health event (`event: health`):
+
+```json
+{ "ok": true, "status": "connecting", "ts": 1730900000000 }
+```
+
+```json
+{ "ok": true, "status": "connected", "ts": 1730900005000 }
+```
+
+```json
+{ "ok": false, "status": "degraded", "ts": 1730900010000, "detail": "..." }
+```
+
+Message event (`event: message`) forwards the full Inngest envelope as JSON without reshaping.
 
 ## Troubleshooting
 

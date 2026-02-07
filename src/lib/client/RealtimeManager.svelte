@@ -1,8 +1,8 @@
 <script lang="ts" generics="TChannel extends ChannelInput">
-	import { onDestroy } from "svelte";
-	import { fromStore, writable } from "svelte/store";
-	import { source, type Event as SseEvent } from "sveltekit-sse";
-	import { setRealtimeContext } from "./context.js";
+	import {onDestroy} from "svelte";
+	import {fromStore, writable} from "svelte/store";
+	import {source, type Event as SseEvent} from "sveltekit-sse";
+	import {setRealtimeContext} from "./context.js";
 	import type {
 		ChannelInput,
 		HealthPayload,
@@ -12,7 +12,7 @@
 	} from "./types.js";
 
 	let {
-		endpoint = "/api/events",
+		endpoint,
 		channel,
 		channelArgs = [],
 		topics,
@@ -22,7 +22,7 @@
 
 	const resolveChannel = <TInput extends ChannelInput>(
 		input: TInput,
-		args: unknown[]
+		args: unknown[],
 	): ResolvedChannel<TInput> => {
 		if (typeof input === "function") {
 			const channelFactory = input as unknown as (
@@ -86,7 +86,7 @@
 				ok: false,
 				status: "degraded",
 				ts: Date.now(),
-				...(detail ? { detail } : {}),
+				...(detail ? {detail} : {}),
 			});
 		},
 		error: (event: SseEvent) => {
@@ -101,10 +101,14 @@
 
 	const streamHealth = events
 		.select("health")
-		.json<HealthPayload>(({ previous }: { previous: HealthPayload | null }) => previous ?? null);
-	const streamHealthUnsubscribe = streamHealth.subscribe((value: HealthPayload | null) => {
-		if (value) health.set(value);
-	});
+		.json<HealthPayload>(
+			({previous}: {previous: HealthPayload | null}) => previous ?? null,
+		);
+	const streamHealthUnsubscribe = streamHealth.subscribe(
+		(value: HealthPayload | null) => {
+			if (value) health.set(value);
+		},
+	);
 
 	setRealtimeContext({
 		channelId: resolvedChannel.name,
