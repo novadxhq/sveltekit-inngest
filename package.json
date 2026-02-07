@@ -1,6 +1,6 @@
 {
-  "name": "@novadxhq/sveltekit-inngest",
-  "version": "0.0.2",
+  "name": "sveltekit-inngest",
+  "version": "0.0.0",
   "license": "MIT",
   "scripts": {
     "dev": "bunx vite dev",
@@ -12,8 +12,7 @@
     "check:watch": "bunx svelte-kit sync && bunx svelte-check --tsconfig ./tsconfig.json --watch",
     "release:verify": "bun run check && bun run build && npm pack --dry-run --cache /tmp/novadx-npm-cache",
     "publish:npm": "npm publish --access public",
-    "publish:gpr": "npm publish --registry https://npm.pkg.github.com/ --cache /tmp/novadx-npm-cache",
-    "publish:both": "bun run release:verify && bun run publish:npm && bun run publish:gpr"
+    "publish:both": "bun run release:verify && bun run publish:npm"
   },
   "files": [
     "dist/index.js",
@@ -37,6 +36,21 @@
       "types": "./dist/index.d.ts",
       "svelte": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "svelte": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    },
+    "./client/index": {
+      "types": "./dist/client/index.d.ts",
+      "svelte": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    },
+    "./client/index.js": {
+      "types": "./dist/client/index.d.ts",
+      "svelte": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
     },
     "./server": {
       "types": "./dist/server/index.d.ts",

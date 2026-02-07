@@ -210,12 +210,11 @@ export function createRealtimeEndpoint<
   inngest,
   channel,
   channelArgs,
-  heartbeatMs = 5_000,
   healthCheck,
   authorize,
 }: RealtimeEndpointOptions<TChannelInput, TLocals>): RequestHandler {
   const healthCheckEnabled = healthCheck?.enabled ?? true;
-  const healthCheckIntervalMs = healthCheck?.intervalMs ?? heartbeatMs;
+  const healthCheckIntervalMs = healthCheck?.intervalMs ?? 5_000;
 
   return async (event) => {
     const { request, locals } = event;

@@ -10,6 +10,9 @@ const eventKey = env.INNGEST_EVENT_KEY ?? (isDev ? "dev" : undefined);
 type Events = {
   'demo/realtime': {
     data: DemoEvent
+  },
+  'demo/nested-realtime': {
+    data: DemoEvent
   }
 }
 
