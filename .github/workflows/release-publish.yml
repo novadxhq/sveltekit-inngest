@@ -81,31 +81,3 @@ jobs:
         run: npm publish --access public
         env:
           NPM_CONFIG_PROVENANCE: "false"
-
-      - name: Setup Node.js for GitHub Packages
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://npm.pkg.github.com
-          scope: "@novadxhq"
-          always-auth: true
-
-      - name: GitHub Packages auth preflight
-        shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-            echo "NODE_AUTH_TOKEN is missing for GitHub Packages publish." >&2
-            exit 1
-          fi
-
-          echo "npm registry before GPR publish: $(npm config get registry)"
-          echo "Configured scope registry: $(npm config get @novadxhq:registry)"
-
-      - name: Publish to GitHub Packages
-        run: npm publish --registry https://npm.pkg.github.com --cache /tmp/novadx-npm-cache
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
