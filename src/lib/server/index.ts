@@ -1,6 +1,7 @@
 export { createRealtimeEndpoint } from "./createRealtimeEndpoint.js";
 export type {
-	RealtimeAuthorizeContext,
-	RealtimeEndpointOptions,
-	RealtimeHealthCheckOptions,
+  RealtimeAuthorizeContext,
+  RealtimeChannelConfig,
+  RealtimeEndpointOptions,
+  RealtimeHealthCheckOptions,
 } from "./createRealtimeEndpoint.js";

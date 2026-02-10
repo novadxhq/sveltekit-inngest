@@ -5,10 +5,10 @@ export type ChannelInput = Realtime.Channel | Realtime.Channel.Definition;
 
 export type ResolvedChannel<T extends ChannelInput> =
   T extends Realtime.Channel.Definition
-  ? Realtime.Channel.Definition.AsChannel<T>
-  : T extends Realtime.Channel
-  ? T
-  : never;
+    ? Realtime.Channel.Definition.AsChannel<T>
+    : T extends Realtime.Channel
+      ? T
+      : never;
 
 type ChannelTopics<T extends ChannelInput> = Realtime.Channel.InferTopics<ResolvedChannel<T>>;
 
@@ -40,12 +40,22 @@ export type RealtimeTopicState<T> = ReactiveCurrent<T | null>;
 
 export type RealtimeRequestParams = Record<string, string | number | boolean | null>;
 
-export type RealtimeManagerProps<TChannel extends ChannelInput> = {
-  endpoint: string;
+export type RealtimeSubscription<TChannel extends ChannelInput = ChannelInput> = {
   channel: TChannel;
   channelArgs?: unknown[];
   topics?: TopicKey<TChannel>[];
   params?: RealtimeRequestParams;
+};
+
+export type RealtimeResolvedSubscription = {
+  channelId: string;
+  topics: string[];
+  params?: RealtimeRequestParams;
+};
+
+export type RealtimeManagerProps = {
+  endpoint?: string;
+  subscriptions: RealtimeSubscription[];
   children?: Snippet;
 };
 

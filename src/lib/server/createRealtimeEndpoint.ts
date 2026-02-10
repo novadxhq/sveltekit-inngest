@@ -1,4 +1,4 @@
-import type { RequestEvent, RequestHandler } from "@sveltejs/kit";
+import { json, type RequestEvent, type RequestHandler } from "@sveltejs/kit";
 import { getSubscriptionToken, subscribe } from "@inngest/realtime";
 import type { Inngest } from "inngest";
 import { produce, type Connection } from "sveltekit-sse";
@@ -46,28 +46,45 @@ export type RealtimeAuthorizeContext<
   params?: RealtimeRequestParams;
 };
 
+export type RealtimeChannelConfig<
+  TChannelInput extends ChannelInput = ChannelInput,
+  TLocals = App.Locals,
+> = {
+  /** Channel definition/object to subscribe to. */
+  channel: TChannelInput;
+  /** Static args or event-driven args for channel builders. */
+  channelArgs?: unknown[] | ChannelArgsResolver;
+  /** Optional per-channel override for per-message reauthorization. */
+  reauthorizeOnEachMessage?: boolean;
+  /** Required permission hook to enforce deny-by-default behavior. */
+  authorize: (
+    context: RealtimeAuthorizeContext<TLocals, TopicKey<TChannelInput>>
+  ) =>
+    | AuthorizationResult<TopicKey<TChannelInput>>
+    | Promise<AuthorizationResult<TopicKey<TChannelInput>>>;
+};
+
+type RealtimeChannelRegistry<TLocals> = Record<
+  string,
+  RealtimeChannelConfig<ChannelInput, TLocals>
+>;
+
 /**
  * Configuration for creating a SvelteKit `POST` handler that proxies Inngest
  * realtime data over SSE.
  */
 export type RealtimeEndpointOptions<
-  TChannelInput extends ChannelInput,
   TLocals = App.Locals,
+  TChannels extends RealtimeChannelRegistry<TLocals> = RealtimeChannelRegistry<TLocals>,
 > = {
   /** Inngest client used for token generation + realtime subscription. */
   inngest: Inngest.Like;
-  /** Channel definition/object to subscribe to. */
-  channel: TChannelInput;
-  /** Static args or event-driven args for channel builders. */
-  channelArgs?: unknown[] | ChannelArgsResolver;
+  /** Static channel registry for global bus routing. */
+  channels: TChannels;
+  /** Global default for per-message reauthorization (can be overridden per channel). */
+  reauthorizeOnEachMessage?: boolean;
   /** Health tick behavior for `health` SSE events. */
   healthCheck?: RealtimeHealthCheckOptions;
-  /** Optional permission hook that can deny or filter topics. */
-  authorize?: (
-    context: RealtimeAuthorizeContext<TLocals, TopicKey<TChannelInput>>
-  ) =>
-    | AuthorizationResult<TopicKey<TChannelInput>>
-    | Promise<AuthorizationResult<TopicKey<TChannelInput>>>;
 };
 
 export type RealtimeHealthCheckOptions = {
@@ -75,7 +92,7 @@ export type RealtimeHealthCheckOptions = {
    * Emit periodic health updates at this interval (in milliseconds).
    * Set to 0 or a negative number to disable interval-based health ticks.
    *
-   * @default 5000
+   * @default 15000
    */
   intervalMs?: number;
   /**
@@ -86,14 +103,11 @@ export type RealtimeHealthCheckOptions = {
   enabled?: boolean;
 };
 
-/**
- * Small helper for JSON responses used by validation/auth failure paths.
- */
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+const jsonError = (
+  status: number,
+  error: string,
+  extra?: Record<string, unknown>
+) => json({ error, ...(extra ?? {}) }, { status });
 
 /**
  * Normalize unknown error values into a human-readable message.
@@ -145,6 +159,12 @@ const parseRequestPayload = async (
   }
 };
 
+const getMessageTopic = (value: unknown): string | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const topic = (value as Record<string, unknown>).topic;
+  return typeof topic === "string" ? topic : null;
+};
+
 /**
  * Resolve a channel input into a concrete channel object.
  * Supports both channel objects and channel builder functions.
@@ -194,102 +214,111 @@ const filterAllowedTopics = <TTopic extends string>(
 /**
  * Creates a SvelteKit `POST` RequestHandler that:
  * 1) validates subscription input,
- * 2) optionally authorizes/filter topics,
- * 3) opens an Inngest realtime subscription,
- * 4) forwards data as SSE `message` events,
- * 5) emits lifecycle `health` SSE events.
+ * 2) routes by requested channel through a static registry,
+ * 3) authorizes/filter topics per channel,
+ * 4) opens an Inngest realtime subscription,
+ * 5) forwards data as SSE `message` events,
+ * 6) emits lifecycle `health` SSE events.
  */
 export function createRealtimeEndpoint<
-  TChannelInput extends ChannelInput,
   TLocals = App.Locals,
+  TChannels extends RealtimeChannelRegistry<TLocals> = RealtimeChannelRegistry<TLocals>,
 >({
   inngest,
-  channel,
-  channelArgs,
+  channels,
+  reauthorizeOnEachMessage,
   healthCheck,
-  authorize,
-}: RealtimeEndpointOptions<TChannelInput, TLocals>): RequestHandler {
+}: RealtimeEndpointOptions<TLocals, TChannels>): RequestHandler {
   const healthCheckEnabled = healthCheck?.enabled ?? true;
-  const healthCheckIntervalMs = healthCheck?.intervalMs ?? 5_000;
+  const healthCheckIntervalMs = healthCheck?.intervalMs ?? 15_000;
 
   return async (event) => {
     const { request, locals } = event;
 
-    // Resolve channel + known topic list for this specific request.
+    // Parse body and route to a configured channel registry entry.
+    const payload = await parseRequestPayload(request);
+    if (!payload) return jsonError(400, "Invalid request body");
+
+    if (!payload.channel) return jsonError(400, "Missing channel");
+    const requestedChannelKey = payload.channel;
+    const channelConfig = channels[requestedChannelKey];
+    if (!channelConfig) {
+      return jsonError(400, "Requested channel is not available");
+    }
+
+    // Resolve the configured channel for this request.
     const resolvedChannel = resolveChannel(
-      channel,
-      await resolveChannelArgs(channelArgs, event)
+      channelConfig.channel,
+      await resolveChannelArgs(channelConfig.channelArgs, event)
     );
     const configuredChannelId = resolvedChannel.name;
+
+    // Guard against registry misconfiguration to avoid subscribing wrong channels.
+    if (configuredChannelId !== requestedChannelKey) {
+      return jsonError(500, "Realtime channel registry mismatch", {
+        requestedChannel: requestedChannelKey,
+        configuredChannel: configuredChannelId,
+      });
+    }
+
     const availableTopics = Object.keys(
       resolvedChannel.topics
-    ) as TopicKey<TChannelInput>[];
+    ) as TopicKey<typeof channelConfig.channel>[];
     const availableTopicSet = new Set<string>(availableTopics);
-
-    // Parse body and validate requested channel.
-    const payload = await parseRequestPayload(request);
-    if (!payload) return json({ error: "Invalid request body" }, 400);
-
-    if (!payload.channel) return json({ error: "Missing channel" }, 400);
-    if (payload.channel !== configuredChannelId) {
-      return json({ error: "Requested channel is not available" }, 400);
-    }
 
     // Default to all channel topics when none are explicitly requested.
     const requestedTopics = (
       payload.topics && payload.topics.length > 0
         ? payload.topics
         : availableTopics
-    ) as TopicKey<TChannelInput>[];
+    ) as TopicKey<typeof channelConfig.channel>[];
 
     // Reject unknown topics early.
     const invalidTopics = requestedTopics.filter(
       (topic) => !availableTopicSet.has(topic)
     );
     if (invalidTopics.length > 0) {
-      return json(
-        {
-          error: "Requested topics are not available",
-          invalidTopics,
-        },
-        400
-      );
+      return jsonError(400, "Requested topics are not available", {
+        invalidTopics,
+      });
     }
 
-    let authorizedTopics = requestedTopics;
+    let authorizationResult: AuthorizationResult<
+      TopicKey<typeof channelConfig.channel>
+    >;
+    try {
+      authorizationResult = await channelConfig.authorize({
+        event,
+        locals: locals as TLocals,
+        request,
+        channelId: configuredChannelId,
+        topics: requestedTopics,
+        params: payload.params,
+      });
+    } catch (error) {
+      return jsonError(403, formatError(error));
+    }
 
-    // Run optional auth hook so callers can deny or scope topic access.
-    if (authorize) {
-      let authorizationResult: AuthorizationResult<TopicKey<TChannelInput>>;
-      try {
-        authorizationResult = await authorize({
-          event,
-          locals: locals as TLocals,
-          request,
-          channelId: configuredChannelId,
-          topics: requestedTopics,
-          params: payload.params,
-        });
-      } catch (error) {
-        return json({ error: formatError(error) }, 403);
-      }
+    if (authorizationResult === false) {
+      return jsonError(403, "Forbidden");
+    }
 
-      if (authorizationResult === false) {
-        return json({ error: "Forbidden" }, 403);
-      }
-
-      // If auth returns allowed topics, intersect with requested topics.
-      if (typeof authorizationResult === "object") {
-        authorizedTopics = filterAllowedTopics(
+    const authorizedTopics =
+      typeof authorizationResult === "object"
+        ? (filterAllowedTopics(
           requestedTopics,
           authorizationResult.allowedTopics
-        ) as TopicKey<TChannelInput>[];
-      }
-    }
+        ) as TopicKey<typeof channelConfig.channel>[])
+        : requestedTopics;
 
     if (authorizedTopics.length === 0) {
-      return json({ error: "Forbidden" }, 403);
+      return jsonError(403, "Forbidden");
     }
+
+    const shouldReauthorizeOnEachMessage =
+      channelConfig.reauthorizeOnEachMessage ??
+      reauthorizeOnEachMessage ??
+      false;
 
     // Start SSE stream and bridge Inngest realtime messages to the client.
     return produce(({ emit, lock }: Connection) => {
@@ -307,8 +336,8 @@ export function createRealtimeEndpoint<
       };
 
       // Emit structured health status as JSON under SSE event name `health`.
-      const emitHealth = (payload: HealthPayload): boolean => {
-        const { error } = emit("health", JSON.stringify(payload));
+      const emitHealth = (healthPayload: HealthPayload): boolean => {
+        const { error } = emit("health", JSON.stringify(healthPayload));
         if (error) {
           stop();
           return false;
@@ -357,7 +386,57 @@ export function createRealtimeEndpoint<
             if (done || closed) break;
             if (value == null) continue;
 
-            console.log("Received value:", value);
+            if (shouldReauthorizeOnEachMessage) {
+              const messageTopic = getMessageTopic(value);
+              if (!messageTopic) {
+                emitDegraded("Realtime message is missing a valid topic");
+                break;
+              }
+
+              if (!availableTopicSet.has(messageTopic)) {
+                emitDegraded(
+                  `Realtime message topic is not configured for channel: ${messageTopic}`
+                );
+                break;
+              }
+
+              const messageTopics = [
+                messageTopic as TopicKey<typeof channelConfig.channel>,
+              ];
+
+              let messageAuthorizationResult: AuthorizationResult<
+                TopicKey<typeof channelConfig.channel>
+              >;
+              try {
+                messageAuthorizationResult = await channelConfig.authorize({
+                  event,
+                  locals: locals as TLocals,
+                  request,
+                  channelId: configuredChannelId,
+                  topics: messageTopics,
+                  params: payload.params,
+                });
+              } catch (error) {
+                emitDegraded(formatError(error));
+                break;
+              }
+
+              if (messageAuthorizationResult === false) {
+                emitDegraded("Forbidden");
+                break;
+              }
+
+              if (typeof messageAuthorizationResult === "object") {
+                const allowedMessageTopics = filterAllowedTopics(
+                  messageTopics,
+                  messageAuthorizationResult.allowedTopics
+                );
+                if (allowedMessageTopics.length === 0) {
+                  emitDegraded("Forbidden");
+                  break;
+                }
+              }
+            }
 
             const { error } = emit("message", JSON.stringify(value));
             if (error) break;

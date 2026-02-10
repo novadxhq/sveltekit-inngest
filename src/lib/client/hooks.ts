@@ -1,95 +1,137 @@
 import { derived, fromStore, type Readable } from "svelte/store";
-import { getRealtimeContext } from "./context.js";
+import { getRealtimeContext, type RealtimeBusChannelContextValue } from "./context.js";
 import type {
-	ChannelInput,
-	RealtimeHealthState,
-	RealtimeTopicEnvelope,
-	RealtimeTopicMessage,
-	RealtimeTopicState,
-	TopicKey,
+  ChannelInput,
+  RealtimeHealthState,
+  RealtimeTopicEnvelope,
+  RealtimeTopicMessage,
+  RealtimeTopicState,
+  ResolvedChannel,
+  TopicKey,
 } from "./types.js";
 
 type JsonPredicatePayload<T> = {
-	error: Error;
-	raw: string;
-	previous: T | null;
+  error: Error;
+  raw: string;
+  previous: T | null;
 };
 
 type TopicJsonOptions<
-	TChannel extends ChannelInput,
-	TTopic extends TopicKey<TChannel>,
-	TOutput,
+  TChannel extends ChannelInput,
+  TTopic extends TopicKey<TChannel>,
+  TOutput,
 > = {
-	map?: (message: RealtimeTopicMessage<TChannel, TTopic>) => TOutput;
-	or?: (
-		payload: JsonPredicatePayload<RealtimeTopicMessage<TChannel, TTopic>>
-	) => RealtimeTopicMessage<TChannel, TTopic> | null;
+  channelArgs?: unknown[];
+  map?: (message: RealtimeTopicMessage<TChannel, TTopic>) => TOutput;
+  or?: (
+    payload: JsonPredicatePayload<RealtimeTopicMessage<TChannel, TTopic>>
+  ) => RealtimeTopicMessage<TChannel, TTopic> | null;
 };
 
-export function getRealtime() {
-	const context = getRealtimeContext();
-	if (!context) {
-		throw new Error(
-			"getRealtime() requires <RealtimeManager> in the component tree."
-		);
-	}
+const resolveChannel = <TInput extends ChannelInput>(
+  input: TInput,
+  args: unknown[]
+): ResolvedChannel<TInput> => {
+  if (typeof input === "function") {
+    const channelFactory = input as unknown as (
+      ...callArgs: unknown[]
+    ) => ResolvedChannel<TInput>;
+    return channelFactory(...args);
+  }
 
-	return context;
+  return input as ResolvedChannel<TInput>;
+};
+
+export function getRealtimeBus() {
+  const context = getRealtimeContext();
+  if (!context) {
+    throw new Error(
+      "getRealtimeBus() requires <RealtimeManager> in the component tree."
+    );
+  }
+
+  return context;
 }
 
-export function getRealtimeState(): Omit<ReturnType<typeof getRealtime>, "health"> & {
-	health: RealtimeHealthState;
+const getChannelContext = <TChannel extends ChannelInput>(
+  channel: TChannel,
+  channelArgs: unknown[] = []
+): RealtimeBusChannelContextValue => {
+  const context = getRealtimeBus();
+  const channels = context.channelsState ?? fromStore(context.channels);
+  const channelId = resolveChannel(channel, channelArgs).name;
+  const channelContext = channels.current[channelId];
+
+  if (!channelContext) {
+    const activeChannels = Object.keys(channels.current);
+    throw new Error(
+      `Realtime channel "${channelId}" is not active. Active channels: ${activeChannels.join(", ") || "none"}.`
+    );
+  }
+
+  return channelContext;
+};
+
+export function getRealtimeBusState<TChannel extends ChannelInput>(
+  channel: TChannel,
+  channelArgs: unknown[] = []
+): Omit<RealtimeBusChannelContextValue, "health"> & {
+  health: RealtimeHealthState;
 } {
-	const context = getRealtime();
+  const channelContext = getChannelContext(channel, channelArgs);
 
-	return {
-		channelId: context.channelId,
-		topics: context.topics,
-		select: context.select,
-		health: context.healthState ?? fromStore(context.health),
-	};
+  return {
+    channelId: channelContext.channelId,
+    topics: channelContext.topics,
+    select: channelContext.select,
+    health: channelContext.healthState ?? fromStore(channelContext.health),
+  };
 }
 
-export function getRealtimeTopicJson<
-	TChannel extends ChannelInput,
-	TTopic extends TopicKey<TChannel>,
-	TOutput = RealtimeTopicEnvelope<TChannel, TTopic>,
+export function getRealtimeBusTopicJson<
+  TChannel extends ChannelInput,
+  TTopic extends TopicKey<TChannel>,
+  TOutput = RealtimeTopicEnvelope<TChannel, TTopic>,
 >(
-	topic: TTopic,
-	options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
+  channel: TChannel,
+  topic: TTopic,
+  options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
 ): Readable<TOutput | null> {
-	const { select } = getRealtime();
+  const { select } = getRealtimeBusState(channel, options.channelArgs ?? []);
 
-	const parsedMessages = select("message").json<RealtimeTopicMessage<TChannel, TTopic>>(
-		options.or ??
-			(({ previous }: { previous: RealtimeTopicMessage<TChannel, TTopic> | null }) =>
-				previous ?? null)
-	);
+  const parsedMessages = select("message").json<RealtimeTopicMessage<TChannel, TTopic>>(
+    options.or ??
+      (({ previous }: { previous: RealtimeTopicMessage<TChannel, TTopic> | null }) =>
+        previous ?? null)
+  );
 
-	const mapMessage =
-		options.map ??
-		((message: RealtimeTopicMessage<TChannel, TTopic>) =>
-			message as TOutput);
+  const mapMessage =
+    options.map ??
+    ((message: RealtimeTopicMessage<TChannel, TTopic>) =>
+      message as TOutput);
 
-	let previous: TOutput | null = null;
+  let previous: TOutput | null = null;
 
-	return derived(parsedMessages, ($message) => {
-		if (!$message || $message.topic !== topic) {
-			return previous;
-		}
+  return derived(parsedMessages, ($message) => {
+    if (!$message || $message.topic !== topic) {
+      return previous;
+    }
 
-		previous = mapMessage($message);
-		return previous;
-	});
+    previous = mapMessage($message);
+    return previous;
+  });
 }
 
-export function getRealtimeTopicState<
-	TChannel extends ChannelInput,
-	TTopic extends TopicKey<TChannel>,
-	TOutput = RealtimeTopicEnvelope<TChannel, TTopic>,
+export function getRealtimeBusTopicState<
+  TChannel extends ChannelInput,
+  TTopic extends TopicKey<TChannel>,
+  TOutput = RealtimeTopicEnvelope<TChannel, TTopic>,
 >(
-	topic: TTopic,
-	options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
+  channel: TChannel,
+  topic: TTopic,
+  options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
 ): RealtimeTopicState<TOutput> {
-	return fromStore(getRealtimeTopicJson<TChannel, TTopic, TOutput>(topic, options));
+  return fromStore(
+    getRealtimeBusTopicJson<TChannel, TTopic, TOutput>(channel, topic, options)
+  );
 }

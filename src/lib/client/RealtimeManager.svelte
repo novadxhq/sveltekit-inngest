@@ -1,127 +1,263 @@
-<script lang="ts" generics="TChannel extends ChannelInput">
-	import {onDestroy} from "svelte";
-	import {fromStore, writable} from "svelte/store";
-	import {source, type Event as SseEvent} from "sveltekit-sse";
-	import {setRealtimeContext} from "./context.js";
-	import type {
-		ChannelInput,
-		HealthPayload,
-		RealtimeManagerProps,
-		ResolvedChannel,
-		TopicKey,
-	} from "./types.js";
+<script lang="ts">
+  import { onDestroy } from "svelte";
+  import { fromStore, writable } from "svelte/store";
+  import { source, type Event as SseEvent } from "sveltekit-sse";
+  import {
+    setRealtimeContext,
+    type RealtimeBusChannelContextValue,
+  } from "./context.js";
+  import type {
+    ChannelInput,
+    HealthPayload,
+    RealtimeManagerProps,
+    RealtimeResolvedSubscription,
+    RealtimeSubscription,
+    ResolvedChannel,
+    TopicKey,
+  } from "./types.js";
 
-	let {
-		endpoint,
-		channel,
-		channelArgs = [],
-		topics,
-		params,
-		children,
-	}: RealtimeManagerProps<TChannel> = $props();
+  let {
+    endpoint = "/api/events",
+    subscriptions = [],
+    children,
+  }: RealtimeManagerProps = $props();
 
-	const resolveChannel = <TInput extends ChannelInput>(
-		input: TInput,
-		args: unknown[],
-	): ResolvedChannel<TInput> => {
-		if (typeof input === "function") {
-			const channelFactory = input as unknown as (
-				...callArgs: unknown[]
-			) => ResolvedChannel<TInput>;
-			return channelFactory(...args);
-		}
+  type ManagedConnection = {
+    signature: string;
+    context: RealtimeBusChannelContextValue;
+    stop: () => void;
+  };
 
-		return input as ResolvedChannel<TInput>;
-	};
+  const channels = writable<Record<string, RealtimeBusChannelContextValue>>({});
+  const channelsState = fromStore(channels);
+  const activeConnections: Record<string, ManagedConnection> = {};
 
-	const getEndpoint = () => endpoint ?? "/api/events";
-	const getResolvedChannel = () => resolveChannel(channel, channelArgs ?? []);
-	const getResolvedTopics = () =>
-		topics?.length
-			? topics
-			: (Object.keys(getResolvedChannel().topics) as TopicKey<TChannel>[]);
-	const getRequestBody = () =>
-		JSON.stringify({
-			channel: getResolvedChannel().name,
-			topics: getResolvedTopics(),
-			params,
-		});
+  setRealtimeContext({
+    channels,
+    channelsState,
+  });
 
-	const resolvedChannel = getResolvedChannel();
-	const resolvedTopics = getResolvedTopics();
+  const resolveChannel = <TInput extends ChannelInput>(
+    input: TInput,
+    args: unknown[],
+  ): ResolvedChannel<TInput> => {
+    if (typeof input === "function") {
+      const channelFactory = input as unknown as (
+        ...callArgs: unknown[]
+      ) => ResolvedChannel<TInput>;
+      return channelFactory(...args);
+    }
 
-	const health = writable<HealthPayload | null>({
-		ok: true,
-		status: "connecting",
-		ts: Date.now(),
-	});
-	const healthState = fromStore(health);
+    return input as ResolvedChannel<TInput>;
+  };
 
-	const getDetail = (event: SseEvent): string | undefined => {
-		if (event.error instanceof Error) return event.error.message;
-		if (event.status >= 400) return `${event.status} ${event.statusText}`;
-		return undefined;
-	};
+  const getDetail = (event: SseEvent): string | undefined => {
+    if (event.error instanceof Error) return event.error.message;
+    if (event.status >= 400) return `${event.status} ${event.statusText}`;
+    return undefined;
+  };
 
-	const events = source(getEndpoint(), {
-		cache: false,
-		options: {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: getRequestBody(),
-		},
-		open: () => {
-			health.set({
-				ok: true,
-				status: "connected",
-				ts: Date.now(),
-			});
-		},
-		close: (event: SseEvent) => {
-			const detail = getDetail(event);
-			if (!detail && event.status < 400) return;
-			health.set({
-				ok: false,
-				status: "degraded",
-				ts: Date.now(),
-				...(detail ? {detail} : {}),
-			});
-		},
-		error: (event: SseEvent) => {
-			health.set({
-				ok: false,
-				status: "degraded",
-				ts: Date.now(),
-				detail: getDetail(event) ?? "Realtime connection error",
-			});
-		},
-	});
+  const serializeSignature = (
+    subscription: RealtimeResolvedSubscription,
+    currentEndpoint: string,
+  ) =>
+    JSON.stringify({
+      endpoint: currentEndpoint,
+      channel: subscription.channelId,
+      topics: subscription.topics,
+      params: subscription.params ?? null,
+    });
 
-	const streamHealth = events
-		.select("health")
-		.json<HealthPayload>(
-			({previous}: {previous: HealthPayload | null}) => previous ?? null,
-		);
-	const streamHealthUnsubscribe = streamHealth.subscribe(
-		(value: HealthPayload | null) => {
-			if (value) health.set(value);
-		},
-	);
+  const resolveSubscriptions = (
+    input: RealtimeSubscription[],
+  ): RealtimeResolvedSubscription[] => {
+    const resolved: RealtimeResolvedSubscription[] = [];
+    const seen: string[] = [];
 
-	setRealtimeContext({
-		channelId: resolvedChannel.name,
-		topics: resolvedTopics as string[],
-		select: events.select,
-		health,
-		healthState,
-	});
+    for (const subscription of input) {
+      const resolvedChannel = resolveChannel(
+        subscription.channel,
+        subscription.channelArgs ?? [],
+      );
+      const channelId = resolvedChannel.name;
 
-	onDestroy(() => {
-		streamHealthUnsubscribe();
-		events.close();
-	});
+      if (seen.includes(channelId)) {
+        throw new Error(
+          `Duplicate realtime subscription for channel "${channelId}" is not allowed.`,
+        );
+      }
+
+      seen.push(channelId);
+
+      const topics = (
+        subscription.topics?.length
+          ? subscription.topics
+          : (Object.keys(resolvedChannel.topics) as TopicKey<typeof subscription.channel>[])
+      ) as string[];
+
+      resolved.push({
+        channelId,
+        topics,
+        params: subscription.params,
+      });
+    }
+
+    return resolved;
+  };
+
+  const createConnection = (
+    subscription: RealtimeResolvedSubscription,
+    currentEndpoint: string,
+  ): ManagedConnection => {
+    const health = writable<HealthPayload | null>({
+      ok: true,
+      status: "connecting",
+      ts: Date.now(),
+    });
+    const healthState = fromStore(health);
+
+    const events = source(currentEndpoint, {
+      cache: false,
+      options: {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          channel: subscription.channelId,
+          topics: subscription.topics,
+          params: subscription.params,
+        }),
+      },
+      open: () => {
+        health.set({
+          ok: true,
+          status: "connected",
+          ts: Date.now(),
+        });
+      },
+      close: (event: SseEvent) => {
+        const detail = getDetail(event);
+        if (!detail && event.status < 400) return;
+
+        health.set({
+          ok: false,
+          status: "degraded",
+          ts: Date.now(),
+          ...(detail ? { detail } : {}),
+        });
+      },
+      error: (event: SseEvent) => {
+        health.set({
+          ok: false,
+          status: "degraded",
+          ts: Date.now(),
+          detail: getDetail(event) ?? "Realtime connection error",
+        });
+      },
+    });
+
+    const streamHealth = events
+      .select("health")
+      .json<HealthPayload>(
+        ({ previous }: { previous: HealthPayload | null }) => previous ?? null,
+      );
+
+    const streamHealthUnsubscribe = streamHealth.subscribe(
+      (value: HealthPayload | null) => {
+        if (value) health.set(value);
+      },
+    );
+
+    const context: RealtimeBusChannelContextValue = {
+      channelId: subscription.channelId,
+      topics: subscription.topics,
+      select: events.select,
+      health,
+      healthState,
+    };
+
+    return {
+      signature: serializeSignature(subscription, currentEndpoint),
+      context,
+      stop: () => {
+        streamHealthUnsubscribe();
+        events.close();
+      },
+    };
+  };
+
+  const publishContext = () => {
+    const nextChannels = Object.fromEntries(
+      Object.entries(activeConnections).map(([channelId, connection]) => [
+        channelId,
+        connection.context,
+      ]),
+    );
+
+    channels.set(nextChannels);
+  };
+
+  const syncConnections = (
+    nextSubscriptions: RealtimeResolvedSubscription[],
+    currentEndpoint: string,
+  ) => {
+    const nextByChannel = Object.fromEntries(
+      nextSubscriptions.map((subscription) => [
+        subscription.channelId,
+        subscription,
+      ]),
+    );
+
+    for (const [channelId, connection] of Object.entries(activeConnections)) {
+      if (!(channelId in nextByChannel)) {
+        connection.stop();
+        delete activeConnections[channelId];
+      }
+    }
+
+    for (const subscription of nextSubscriptions) {
+      const nextSignature = serializeSignature(subscription, currentEndpoint);
+      const existing = activeConnections[subscription.channelId];
+
+      if (existing?.signature === nextSignature) {
+        continue;
+      }
+
+      if (existing) {
+        existing.stop();
+        delete activeConnections[subscription.channelId];
+      }
+
+      activeConnections[subscription.channelId] = createConnection(
+        subscription,
+        currentEndpoint,
+      );
+    }
+
+    publishContext();
+  };
+
+  const applySubscriptions = () => {
+    syncConnections(resolveSubscriptions(subscriptions), endpoint);
+  };
+
+  applySubscriptions();
+
+  $effect(() => {
+    applySubscriptions();
+  });
+
+  onDestroy(() => {
+    for (const connection of Object.values(activeConnections)) {
+      connection.stop();
+    }
+
+    for (const channelId of Object.keys(activeConnections)) {
+      delete activeConnections[channelId];
+    }
+    channels.set({});
+  });
 </script>
 
 {@render children?.()}

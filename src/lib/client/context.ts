@@ -1,23 +1,28 @@
 import { getContext, setContext } from "svelte";
 import type { SourceSelect } from "sveltekit-sse";
 import type { Readable } from "svelte/store";
-import type { HealthPayload, RealtimeHealthState } from "./types.js";
+import type { HealthPayload, ReactiveCurrent, RealtimeHealthState } from "./types.js";
 
-export type RealtimeContextValue = {
-	channelId: string;
-	topics: string[];
-	select: SourceSelect;
-	health: Readable<HealthPayload | null>;
-	healthState?: RealtimeHealthState;
+export type RealtimeBusChannelContextValue = {
+  channelId: string;
+  topics: string[];
+  select: SourceSelect;
+  health: Readable<HealthPayload | null>;
+  healthState?: RealtimeHealthState;
 };
 
-const REALTIME_CONTEXT_KEY = Symbol("novadx-realtime-context");
+export type RealtimeBusContextValue = {
+  channels: Readable<Record<string, RealtimeBusChannelContextValue>>;
+  channelsState?: ReactiveCurrent<Record<string, RealtimeBusChannelContextValue>>;
+};
 
-export function setRealtimeContext(value: RealtimeContextValue): RealtimeContextValue {
-	setContext(REALTIME_CONTEXT_KEY, value);
-	return value;
+const REALTIME_CONTEXT_KEY = Symbol("novadx-realtime-bus-context");
+
+export function setRealtimeContext(value: RealtimeBusContextValue): RealtimeBusContextValue {
+  setContext(REALTIME_CONTEXT_KEY, value);
+  return value;
 }
 
-export function getRealtimeContext(): RealtimeContextValue | undefined {
-	return getContext<RealtimeContextValue | undefined>(REALTIME_CONTEXT_KEY);
+export function getRealtimeContext(): RealtimeBusContextValue | undefined {
+  return getContext<RealtimeBusContextValue | undefined>(REALTIME_CONTEXT_KEY);
 }
