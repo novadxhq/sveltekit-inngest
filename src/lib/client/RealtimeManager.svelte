@@ -57,6 +57,9 @@
     return undefined;
   };
 
+  const normalizeTopics = (topics: string[]): string[] =>
+    [...new Set(topics)].sort();
+
   const serializeSignature = (
     subscription: RealtimeResolvedSubscription,
     currentEndpoint: string,
@@ -64,7 +67,7 @@
     JSON.stringify({
       endpoint: currentEndpoint,
       channel: subscription.channelId,
-      topics: subscription.topics,
+      topics: normalizeTopics(subscription.topics),
       params: subscription.params ?? null,
     });
 
@@ -89,11 +92,12 @@
 
       seen.push(channelId);
 
-      const topics = (
+      const requestedTopics = (
         subscription.topics?.length
           ? subscription.topics
           : (Object.keys(resolvedChannel.topics) as TopicKey<typeof subscription.channel>[])
       ) as string[];
+      const topics = normalizeTopics(requestedTopics);
 
       resolved.push({
         channelId,

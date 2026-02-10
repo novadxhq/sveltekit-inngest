@@ -314,6 +314,7 @@ export function createRealtimeEndpoint<
     if (authorizedTopics.length === 0) {
       return jsonError(403, "Forbidden");
     }
+    const authorizedTopicSet = new Set<string>(authorizedTopics);
 
     const shouldReauthorizeOnEachMessage =
       channelConfig.reauthorizeOnEachMessage ??
@@ -396,6 +397,13 @@ export function createRealtimeEndpoint<
               if (!availableTopicSet.has(messageTopic)) {
                 emitDegraded(
                   `Realtime message topic is not configured for channel: ${messageTopic}`
+                );
+                break;
+              }
+
+              if (!authorizedTopicSet.has(messageTopic)) {
+                emitDegraded(
+                  `Realtime message topic is not authorized for this connection: ${messageTopic}`
                 );
                 break;
               }
