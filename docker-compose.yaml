@@ -1,0 +1,9 @@
+services:
+  inngest:
+    image: inngest/inngest:latest
+    command:
+      ["inngest", "dev", "-u", "http://host.docker.internal:5173/api/inngest"]
+    ports:
+      - "8288:8288"
+    environment:
+      - INNGEST_DEV=1
