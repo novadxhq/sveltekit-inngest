@@ -9,12 +9,13 @@
 		CardHeader,
 		CardTitle,
 	} from "$demo/ui/components/ui/card/index.js";
-	import {demoChannel} from "$demo/channels.js";
+	import {demoChannel, demoUserId, userChannel} from "$demo/channels.js";
 	import {
 		reauthAndConnect,
 		triggerInngestAdminDemo,
 		triggerInngestDemo,
 		triggerReauthorizationWorkflow,
+		triggerUserInngestDemo,
 	} from "$demo/remote/demo.remote.js";
 	import {getRealtimeBusState, getRealtimeBusTopicState} from "$lib/index.js";
 	import {toast} from "svelte-sonner";
@@ -28,9 +29,15 @@
 		typeof demoChannel,
 		"admin-message"
 	>(demoChannel, "admin-message");
+	const userMessage = getRealtimeBusTopicState<typeof userChannel, "message">(
+		userChannel,
+		"message",
+		{channelParams: demoUserId}
+	);
 
 	let messageInput = $state("hello, world");
 	let adminMessageInput = $state("admin-only update");
+	let userMessageInput = $state("hello from user channel");
 	let reauthMessageInput = $state("reauth workflow test");
 	let role = $state<"admin" | "member">("member");
 
@@ -155,6 +162,29 @@
 				{/if}
 			</CardContent>
 		</Card>
+
+		<Card>
+			<CardHeader>
+				<CardTitle>User Topic (`user:{demoUserId}`)</CardTitle>
+				<CardDescription>
+					Composite channel subscription for a single user-scoped stream.
+				</CardDescription>
+			</CardHeader>
+			<CardContent>
+				{#if userMessage.current}
+					<pre
+						class="max-h-64 overflow-auto rounded-lg border bg-muted/40 p-3 text-xs">{JSON.stringify(
+							userMessage.current,
+							null,
+							2
+						)}</pre>
+				{:else}
+					<p class="text-sm text-muted-foreground">
+						No user-channel messages received yet.
+					</p>
+				{/if}
+			</CardContent>
+		</Card>
 	</div>
 
 	<Card>
@@ -214,10 +244,38 @@
 				</div>
 			</div>
 
+			<div class="grid gap-2 rounded-lg border p-3">
+				<p class="text-sm font-medium">3) User composite channel test</p>
+				<p class="text-xs text-muted-foreground">
+					Sends a message to <code>user:{demoUserId}</code> via
+					<code>channelParams</code>.
+				</p>
+				<div class="flex flex-col gap-2 sm:flex-row">
+					<input
+						id="user-message"
+						class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+						bind:value={userMessageInput}
+					/>
+					<Button
+						variant="secondary"
+						class="sm:w-52"
+						onclick={async () => {
+							await triggerUserInngestDemo({
+								userId: demoUserId,
+								message: userMessageInput,
+							});
+							toast(`triggered user channel message (${demoUserId})`);
+						}}
+					>
+						Send User Event
+					</Button>
+				</div>
+			</div>
+
 			<div
 				class="grid gap-2 rounded-lg border border-amber-300/50 bg-amber-50/30 p-3 dark:border-amber-500/40 dark:bg-amber-500/10"
 			>
-				<p class="text-sm font-medium">3) Reauthorization test</p>
+				<p class="text-sm font-medium">4) Reauthorization test</p>
 				<p class="text-xs text-muted-foreground">
 					Forces auth denial on the next emitted message. Active stream should
 					become degraded and close.

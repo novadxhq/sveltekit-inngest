@@ -9,6 +9,7 @@
   import type {
     ChannelInput,
     HealthPayload,
+    RealtimeClientFailureContext,
     RealtimeManagerProps,
     RealtimeResolvedSubscription,
     RealtimeSubscription,
@@ -19,6 +20,7 @@
   let {
     endpoint = "/api/events",
     subscriptions = [],
+    onFailure,
     children,
   }: RealtimeManagerProps = $props();
 
@@ -39,13 +41,15 @@
 
   const resolveChannel = <TInput extends ChannelInput>(
     input: TInput,
-    args: unknown[],
+    channelParam?: string,
   ): ResolvedChannel<TInput> => {
     if (typeof input === "function") {
       const channelFactory = input as unknown as (
-        ...callArgs: unknown[]
+        value?: string
       ) => ResolvedChannel<TInput>;
-      return channelFactory(...args);
+      return channelParam === undefined
+        ? channelFactory()
+        : channelFactory(channelParam);
     }
 
     return input as ResolvedChannel<TInput>;
@@ -80,7 +84,7 @@
     for (const subscription of input) {
       const resolvedChannel = resolveChannel(
         subscription.channel,
-        subscription.channelArgs ?? [],
+        subscription.channelParams,
       );
       const channelId = resolvedChannel.name;
 
@@ -119,6 +123,23 @@
       ts: Date.now(),
     });
     const healthState = fromStore(health);
+    let lastFailureFingerprint: string | null = null;
+
+    const reportFailure = (failure: RealtimeClientFailureContext) => {
+      const failureFingerprint = JSON.stringify({
+        message: failure.message ?? null,
+        status: failure.status ?? null,
+        statusText: failure.statusText ?? null,
+      });
+
+      if (failureFingerprint === lastFailureFingerprint) return;
+      lastFailureFingerprint = failureFingerprint;
+
+      if (!onFailure) return;
+      void Promise.resolve(onFailure(failure)).catch(() => {
+        // Swallow callback failures to avoid destabilizing connection lifecycle.
+      });
+    };
 
     const events = source(currentEndpoint, {
       cache: false,
@@ -134,6 +155,7 @@
         }),
       },
       open: () => {
+        lastFailureFingerprint = null;
         health.set({
           ok: true,
           status: "connected",
@@ -144,6 +166,15 @@
         const detail = getDetail(event);
         if (!detail && event.status < 400) return;
 
+        reportFailure({
+          endpoint: currentEndpoint,
+          channelId: subscription.channelId,
+          source: "transport-close",
+          message: detail,
+          status: event.status,
+          statusText: event.statusText,
+        });
+
         health.set({
           ok: false,
           status: "degraded",
@@ -152,11 +183,22 @@
         });
       },
       error: (event: SseEvent) => {
+        const detail = getDetail(event) ?? "Realtime connection error";
+
+        reportFailure({
+          endpoint: currentEndpoint,
+          channelId: subscription.channelId,
+          source: "transport-error",
+          message: detail,
+          status: event.status,
+          statusText: event.statusText,
+        });
+
         health.set({
           ok: false,
           status: "degraded",
           ts: Date.now(),
-          detail: getDetail(event) ?? "Realtime connection error",
+          detail,
         });
       },
     });
@@ -169,7 +211,22 @@
 
     const streamHealthUnsubscribe = streamHealth.subscribe(
       (value: HealthPayload | null) => {
-        if (value) health.set(value);
+        if (!value) return;
+
+        health.set(value);
+
+        if (value.ok) {
+          lastFailureFingerprint = null;
+          return;
+        }
+
+        reportFailure({
+          endpoint: currentEndpoint,
+          channelId: subscription.channelId,
+          source: "health",
+          message: value.detail,
+          health: value,
+        });
       },
     );
 

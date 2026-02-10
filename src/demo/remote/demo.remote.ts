@@ -21,6 +21,24 @@ export const triggerInngestAdminDemo = command(z.string(), async (data) => {
   });
 });
 
+const userDemoEventSchema = z.object({
+  userId: z.string().min(1),
+  message: z.string(),
+});
+
+export const triggerUserInngestDemo = command(
+  userDemoEventSchema,
+  async ({ userId, message }) => {
+    await inngest.send({
+      name: "demo/realtime-user",
+      data: {
+        userId,
+        message,
+      },
+    });
+  }
+);
+
 export const triggerReauthorizationWorkflow = command(z.string(), async (data) => {
   // Keep denial active long enough for the next published event to be processed.
   enableReauthDenyForMs(30_000);

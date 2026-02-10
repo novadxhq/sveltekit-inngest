@@ -2,7 +2,7 @@ import { EventSchemas, Inngest } from "inngest";
 import { realtimeMiddleware } from "@inngest/realtime/middleware";
 import { env } from "$env/dynamic/private";
 import { dev } from "$app/environment";
-import type { DemoEvent } from "./demo.ts";
+import type { DemoEvent, UserDemoEvent } from "./demo.ts";
 
 const isDevFlag = env.INNGEST_DEV;
 const isDev =
@@ -19,6 +19,9 @@ type Events = {
   };
   "demo/nested-realtime": {
     data: DemoEvent;
+  };
+  "demo/realtime-user": {
+    data: UserDemoEvent;
   };
 };
 

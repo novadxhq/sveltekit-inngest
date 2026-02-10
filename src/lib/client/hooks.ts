@@ -21,7 +21,7 @@ type TopicJsonOptions<
   TTopic extends TopicKey<TChannel>,
   TOutput,
 > = {
-  channelArgs?: unknown[];
+  channelParams?: string;
   map?: (message: RealtimeTopicMessage<TChannel, TTopic>) => TOutput;
   or?: (
     payload: JsonPredicatePayload<RealtimeTopicMessage<TChannel, TTopic>>
@@ -30,13 +30,15 @@ type TopicJsonOptions<
 
 const resolveChannel = <TInput extends ChannelInput>(
   input: TInput,
-  args: unknown[]
+  channelParam?: string
 ): ResolvedChannel<TInput> => {
   if (typeof input === "function") {
     const channelFactory = input as unknown as (
-      ...callArgs: unknown[]
+      value?: string
     ) => ResolvedChannel<TInput>;
-    return channelFactory(...args);
+    return channelParam === undefined
+      ? channelFactory()
+      : channelFactory(channelParam);
   }
 
   return input as ResolvedChannel<TInput>;
@@ -55,11 +57,11 @@ export function getRealtimeBus() {
 
 const getChannelContext = <TChannel extends ChannelInput>(
   channel: TChannel,
-  channelArgs: unknown[] = []
+  channelParams?: string
 ): RealtimeBusChannelContextValue => {
   const context = getRealtimeBus();
   const channels = context.channelsState ?? fromStore(context.channels);
-  const channelId = resolveChannel(channel, channelArgs).name;
+  const channelId = resolveChannel(channel, channelParams).name;
   const channelContext = channels.current[channelId];
 
   if (!channelContext) {
@@ -74,11 +76,11 @@ const getChannelContext = <TChannel extends ChannelInput>(
 
 export function getRealtimeBusState<TChannel extends ChannelInput>(
   channel: TChannel,
-  channelArgs: unknown[] = []
+  channelParams?: string
 ): Omit<RealtimeBusChannelContextValue, "health"> & {
   health: RealtimeHealthState;
 } {
-  const channelContext = getChannelContext(channel, channelArgs);
+  const channelContext = getChannelContext(channel, channelParams);
 
   return {
     channelId: channelContext.channelId,
@@ -97,7 +99,7 @@ export function getRealtimeBusTopicJson<
   topic: TTopic,
   options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
 ): Readable<TOutput | null> {
-  const { select } = getRealtimeBusState(channel, options.channelArgs ?? []);
+  const { select } = getRealtimeBusState(channel, options.channelParams);
 
   const parsedMessages = select("message").json<RealtimeTopicMessage<TChannel, TTopic>>(
     options.or ??

@@ -30,3 +30,15 @@ export const demoChannel = channel("demo")
  * Second demo channel for real-time messaging.
  */
 export const secondDemoChannel = channel("second-demo").addTopic(messageTopic);
+
+/**
+ * Demo user identifier for composite channel examples.
+ */
+export const demoUserId = "alice";
+
+/**
+ * Composite channel for user-scoped real-time messaging.
+ */
+export const userChannel = channel((userId: string) => `user:${userId}`).addTopic(
+  messageTopic
+);

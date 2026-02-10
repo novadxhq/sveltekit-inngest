@@ -5,4 +5,6 @@ export type {
   RealtimeChannelConfig,
   RealtimeEndpointOptions,
   RealtimeHealthCheckOptions,
+  RealtimeServerFailureContext,
+  RealtimeServerFailureStage,
 } from "./createRealtimeEndpoint.js";

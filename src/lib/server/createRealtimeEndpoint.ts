@@ -24,11 +24,15 @@ type AuthorizationResult<TTopic extends string> =
   };
 
 /**
- * Optional resolver for channel builder args.
- * This receives the full SvelteKit RequestEvent so callers can derive args from
- * route params, cookies, headers, etc.
+ * Optional resolver for channel builder params.
+ * This receives the full SvelteKit RequestEvent plus requested channel details
+ * so callers can derive params from route params, cookies, headers, etc.
  */
-type ChannelArgsResolver = (event: RequestEvent) => unknown[] | Promise<unknown[]>;
+type ChannelParamsResolver = (
+  event: RequestEvent,
+  requestedChannelId: string,
+  requestParams?: RealtimeRequestParams,
+) => string | Promise<string>;
 
 /**
  * Context passed to `authorize` so userland code can make auth decisions with
@@ -64,8 +68,8 @@ export type RealtimeChannelConfig<
 > = {
   /** Channel definition/object to subscribe to. */
   channel: TChannelInput;
-  /** Static args or event-driven args for channel builders. */
-  channelArgs?: unknown[] | ChannelArgsResolver;
+  /** Static params or event-driven params for channel builders. */
+  channelParams?: string | ChannelParamsResolver;
   /** Optional per-channel override for per-message reauthorization. */
   reauthorizeOnEachMessage?: boolean;
   /**
@@ -81,6 +85,28 @@ export type RealtimeChannelConfig<
   ) =>
     | AuthorizationResult<TopicKey<TChannelInput>>
     | Promise<AuthorizationResult<TopicKey<TChannelInput>>>;
+};
+
+export type RealtimeServerFailureStage =
+  | "request-validation"
+  | "channel-resolution"
+  | "topic-validation"
+  | "authorization"
+  | "reauthorization"
+  | "stream";
+
+export type RealtimeServerFailureContext<TLocals = App.Locals> = {
+  event: RequestEvent;
+  locals: TLocals;
+  request: Request;
+  stage: RealtimeServerFailureStage;
+  message: string;
+  status?: number;
+  error?: unknown;
+  requestedChannelId?: string;
+  channelId?: string;
+  topics?: string[];
+  params?: RealtimeRequestParams;
 };
 
 type RealtimeChannelRegistry<TLocals> = Record<
@@ -104,6 +130,10 @@ export type RealtimeEndpointOptions<
   reauthorizeOnEachMessage?: boolean;
   /** Health tick behavior for `health` SSE events. */
   healthCheck?: RealtimeHealthCheckOptions;
+  /** Optional endpoint-level failure callback for request + stream failures. */
+  onFailure?: (
+    failure: RealtimeServerFailureContext<TLocals>
+  ) => void | { message?: string } | Promise<void | { message?: string }>;
 };
 
 export type RealtimeHealthCheckOptions = {
@@ -190,32 +220,35 @@ const getMessageTopic = (value: unknown): string | null => {
  */
 const resolveChannel = <TInput extends ChannelInput>(
   input: TInput,
-  args: unknown[]
+  channelParam?: string
 ): ResolvedChannel<TInput> => {
   if (typeof input === "function") {
     const channelFactory = input as unknown as (
-      ...callArgs: unknown[]
+      value?: string
     ) => ResolvedChannel<TInput>;
-    return channelFactory(...args);
+    return channelParam === undefined
+      ? channelFactory()
+      : channelFactory(channelParam);
   }
 
   return input as ResolvedChannel<TInput>;
 };
 
 /**
- * Resolve channel args from either static config or a RequestEvent callback.
+ * Resolve channel params from either static config or a RequestEvent callback.
  */
-const resolveChannelArgs = async (
-  channelArgs: unknown[] | ChannelArgsResolver | undefined,
-  event: RequestEvent
-): Promise<unknown[]> => {
-  if (Array.isArray(channelArgs)) return channelArgs;
-  if (typeof channelArgs === "function") {
-    const args = await channelArgs(event);
-    return Array.isArray(args) ? args : [];
+const resolveChannelParams = async (
+  channelParams: string | ChannelParamsResolver | undefined,
+  event: RequestEvent,
+  requestedChannelId: string,
+  requestParams?: RealtimeRequestParams,
+): Promise<string | undefined> => {
+  if (typeof channelParams === "string") return channelParams;
+  if (typeof channelParams === "function") {
+    return await channelParams(event, requestedChannelId, requestParams);
   }
 
-  return [];
+  return undefined;
 };
 
 /**
@@ -247,38 +280,160 @@ export function createRealtimeEndpoint<
   channels,
   reauthorizeOnEachMessage,
   healthCheck,
+  onFailure,
 }: RealtimeEndpointOptions<TLocals, TChannels>): RequestHandler {
   const healthCheckEnabled = healthCheck?.enabled ?? true;
   const healthCheckIntervalMs = healthCheck?.intervalMs ?? 15_000;
+  const resolveFailureMessage = async (
+    failure: RealtimeServerFailureContext<TLocals>
+  ): Promise<string> => {
+    if (!onFailure) return failure.message;
+
+    try {
+      const result = await onFailure(failure);
+      if (
+        result &&
+        typeof result === "object" &&
+        !Array.isArray(result) &&
+        typeof result.message === "string"
+      ) {
+        return result.message;
+      }
+    } catch {
+      // Never fail request/stream because `onFailure` itself throws.
+    }
+
+    return failure.message;
+  };
 
   return async (event) => {
     const { request, locals } = event;
+    const typedLocals = locals as TLocals;
+
+    const failRequest = async ({
+      status,
+      stage,
+      message,
+      error,
+      requestedChannelId,
+      channelId,
+      topics,
+      params,
+      extra,
+    }: {
+      status: number;
+      stage: RealtimeServerFailureStage;
+      message: string;
+      error?: unknown;
+      requestedChannelId?: string;
+      channelId?: string;
+      topics?: string[];
+      params?: RealtimeRequestParams;
+      extra?: Record<string, unknown>;
+    }) => {
+      const resolvedMessage = await resolveFailureMessage({
+        event,
+        locals: typedLocals,
+        request,
+        stage,
+        message,
+        status,
+        error,
+        requestedChannelId,
+        channelId,
+        topics,
+        params,
+      });
+
+      return jsonError(status, resolvedMessage, extra);
+    };
 
     // Parse body and route to a configured channel registry entry.
     const payload = await parseRequestPayload(request);
-    if (!payload) return jsonError(400, "Invalid request body");
-
-    if (!payload.channel) return jsonError(400, "Missing channel");
-    const requestedChannelKey = payload.channel;
-    const channelConfig = channels[requestedChannelKey];
-    if (!channelConfig) {
-      return jsonError(400, "Requested channel is not available");
-    }
-
-    // Resolve the configured channel for this request.
-    const resolvedChannel = resolveChannel(
-      channelConfig.channel,
-      await resolveChannelArgs(channelConfig.channelArgs, event)
-    );
-    const configuredChannelId = resolvedChannel.name;
-
-    // Guard against registry misconfiguration to avoid subscribing wrong channels.
-    if (configuredChannelId !== requestedChannelKey) {
-      return jsonError(500, "Realtime channel registry mismatch", {
-        requestedChannel: requestedChannelKey,
-        configuredChannel: configuredChannelId,
+    if (!payload) {
+      return failRequest({
+        status: 400,
+        stage: "request-validation",
+        message: "Invalid request body",
       });
     }
+
+    if (!payload.channel) {
+      return failRequest({
+        status: 400,
+        stage: "request-validation",
+        message: "Missing channel",
+        params: payload.params,
+      });
+    }
+    const requestedChannelKey = payload.channel;
+
+    const channelMatches: {
+      registryKey: string;
+      channelConfig: RealtimeChannelConfig<ChannelInput, TLocals>;
+      resolvedChannel: ResolvedChannel<ChannelInput>;
+    }[] = [];
+
+    for (const [registryKey, configuredChannel] of Object.entries(channels)) {
+      const channelConfig =
+        configuredChannel as RealtimeChannelConfig<ChannelInput, TLocals>;
+      let resolvedChannel: ResolvedChannel<ChannelInput>;
+      try {
+        resolvedChannel = resolveChannel(
+          channelConfig.channel,
+          await resolveChannelParams(
+            channelConfig.channelParams,
+            event,
+            requestedChannelKey,
+            payload.params,
+          )
+        );
+      } catch (error) {
+        return failRequest({
+          status: 500,
+          stage: "channel-resolution",
+          message: formatError(error),
+          error,
+          requestedChannelId: requestedChannelKey,
+          params: payload.params,
+        });
+      }
+
+      if (resolvedChannel.name === requestedChannelKey) {
+        channelMatches.push({
+          registryKey,
+          channelConfig,
+          resolvedChannel,
+        });
+      }
+    }
+
+    if (channelMatches.length === 0) {
+      return failRequest({
+        status: 400,
+        stage: "channel-resolution",
+        message: "Requested channel is not available",
+        requestedChannelId: requestedChannelKey,
+        params: payload.params,
+      });
+    }
+
+    if (channelMatches.length > 1) {
+      return failRequest({
+        status: 500,
+        stage: "channel-resolution",
+        message: "Realtime channel registry is ambiguous",
+        requestedChannelId: requestedChannelKey,
+        params: payload.params,
+        extra: {
+          requestedChannel: requestedChannelKey,
+          matchingRegistryKeys: channelMatches.map((entry) => entry.registryKey),
+        },
+      });
+    }
+
+    const [{ channelConfig, resolvedChannel }] = channelMatches;
+    const configuredChannelId = resolvedChannel.name;
 
     const availableTopics = Object.keys(
       resolvedChannel.topics
@@ -297,8 +452,17 @@ export function createRealtimeEndpoint<
       (topic) => !availableTopicSet.has(topic)
     );
     if (invalidTopics.length > 0) {
-      return jsonError(400, "Requested topics are not available", {
-        invalidTopics,
+      return failRequest({
+        status: 400,
+        stage: "topic-validation",
+        message: "Requested topics are not available",
+        requestedChannelId: requestedChannelKey,
+        channelId: configuredChannelId,
+        topics: requestedTopics as string[],
+        params: payload.params,
+        extra: {
+          invalidTopics,
+        },
       });
     }
 
@@ -308,18 +472,35 @@ export function createRealtimeEndpoint<
     try {
       authorizationResult = await channelConfig.authorize({
         event,
-        locals: locals as TLocals,
+        locals: typedLocals,
         request,
         channelId: configuredChannelId,
         topics: requestedTopics,
         params: payload.params,
       });
     } catch (error) {
-      return jsonError(403, formatError(error));
+      return failRequest({
+        status: 403,
+        stage: "authorization",
+        message: formatError(error),
+        error,
+        requestedChannelId: requestedChannelKey,
+        channelId: configuredChannelId,
+        topics: requestedTopics as string[],
+        params: payload.params,
+      });
     }
 
     if (authorizationResult === false) {
-      return jsonError(403, "Forbidden");
+      return failRequest({
+        status: 403,
+        stage: "authorization",
+        message: "Forbidden",
+        requestedChannelId: requestedChannelKey,
+        channelId: configuredChannelId,
+        topics: requestedTopics as string[],
+        params: payload.params,
+      });
     }
 
     const authorizedTopics =
@@ -331,9 +512,18 @@ export function createRealtimeEndpoint<
         : requestedTopics;
 
     if (authorizedTopics.length === 0) {
-      return jsonError(403, "Forbidden");
+      return failRequest({
+        status: 403,
+        stage: "authorization",
+        message: "Forbidden",
+        requestedChannelId: requestedChannelKey,
+        channelId: configuredChannelId,
+        topics: requestedTopics as string[],
+        params: payload.params,
+      });
     }
     const authorizedTopicSet = new Set<string>(authorizedTopics);
+    const authorizedTopicsList = authorizedTopics as string[];
 
     const shouldReauthorizeOnEachMessage =
       channelConfig.reauthorizeOnEachMessage ??
@@ -374,6 +564,31 @@ export function createRealtimeEndpoint<
           detail,
         });
       };
+      const emitDegradedFailure = async ({
+        stage,
+        message,
+        error,
+        topics,
+      }: {
+        stage: RealtimeServerFailureStage;
+        message: string;
+        error?: unknown;
+        topics?: string[];
+      }) => {
+        const resolvedMessage = await resolveFailureMessage({
+          event,
+          locals: typedLocals,
+          request,
+          stage,
+          message,
+          error,
+          requestedChannelId: requestedChannelKey,
+          channelId: configuredChannelId,
+          topics,
+          params: payload.params,
+        });
+        emitDegraded(resolvedMessage);
+      };
 
       void (async () => {
         // Tell client the stream lifecycle has started.
@@ -409,21 +624,31 @@ export function createRealtimeEndpoint<
             if (shouldReauthorizeOnEachMessage) {
               const messageTopic = getMessageTopic(value);
               if (!messageTopic) {
-                emitDegraded("Realtime message is missing a valid topic");
+                await emitDegradedFailure({
+                  stage: "reauthorization",
+                  message: "Realtime message is missing a valid topic",
+                  topics: authorizedTopicsList,
+                });
                 break;
               }
 
               if (!availableTopicSet.has(messageTopic)) {
-                emitDegraded(
-                  `Realtime message topic is not configured for channel: ${messageTopic}`
-                );
+                await emitDegradedFailure({
+                  stage: "reauthorization",
+                  message:
+                    `Realtime message topic is not configured for channel: ${messageTopic}`,
+                  topics: [messageTopic],
+                });
                 break;
               }
 
               if (!authorizedTopicSet.has(messageTopic)) {
-                emitDegraded(
-                  `Realtime message topic is not authorized for this connection: ${messageTopic}`
-                );
+                await emitDegradedFailure({
+                  stage: "reauthorization",
+                  message:
+                    `Realtime message topic is not authorized for this connection: ${messageTopic}`,
+                  topics: [messageTopic],
+                });
                 break;
               }
 
@@ -438,7 +663,7 @@ export function createRealtimeEndpoint<
                 try {
                   shouldContinueStream = await channelConfig.reauthorize({
                     event,
-                    locals: locals as TLocals,
+                    locals: typedLocals,
                     request,
                     channelId: configuredChannelId,
                     topics: messageTopics,
@@ -447,12 +672,21 @@ export function createRealtimeEndpoint<
                     message: value,
                   });
                 } catch (error) {
-                  emitDegraded(formatError(error));
+                  await emitDegradedFailure({
+                    stage: "reauthorization",
+                    message: formatError(error),
+                    error,
+                    topics: messageTopics as string[],
+                  });
                   break;
                 }
 
                 if (shouldContinueStream !== true) {
-                  emitDegraded("Forbidden");
+                  await emitDegradedFailure({
+                    stage: "reauthorization",
+                    message: "Forbidden",
+                    topics: messageTopics as string[],
+                  });
                   break;
                 }
               } else {
@@ -462,19 +696,28 @@ export function createRealtimeEndpoint<
                 try {
                   messageAuthorizationResult = await channelConfig.authorize({
                     event,
-                    locals: locals as TLocals,
+                    locals: typedLocals,
                     request,
                     channelId: configuredChannelId,
                     topics: messageTopics,
                     params: payload.params,
                   });
                 } catch (error) {
-                  emitDegraded(formatError(error));
+                  await emitDegradedFailure({
+                    stage: "reauthorization",
+                    message: formatError(error),
+                    error,
+                    topics: messageTopics as string[],
+                  });
                   break;
                 }
 
                 if (messageAuthorizationResult === false) {
-                  emitDegraded("Forbidden");
+                  await emitDegradedFailure({
+                    stage: "reauthorization",
+                    message: "Forbidden",
+                    topics: messageTopics as string[],
+                  });
                   break;
                 }
 
@@ -484,7 +727,11 @@ export function createRealtimeEndpoint<
                     messageAuthorizationResult.allowedTopics
                   );
                   if (allowedMessageTopics.length === 0) {
-                    emitDegraded("Forbidden");
+                    await emitDegradedFailure({
+                      stage: "reauthorization",
+                      message: "Forbidden",
+                      topics: messageTopics as string[],
+                    });
                     break;
                   }
                 }
@@ -496,7 +743,12 @@ export function createRealtimeEndpoint<
           }
         } catch (error) {
           // Surface failures to the client before closing.
-          emitDegraded(formatError(error));
+          await emitDegradedFailure({
+            stage: "stream",
+            message: formatError(error),
+            error,
+            topics: authorizedTopicsList,
+          });
         } finally {
           stop();
         }

@@ -1,7 +1,12 @@
-import { demoChannel, secondDemoChannel } from "../channels.js";
+import { demoChannel, secondDemoChannel, userChannel } from "../channels.js";
 import { inngest } from "./inngest.js";
 
 export type DemoEvent = {
+  message: string;
+};
+
+export type UserDemoEvent = {
+  userId: string;
   message: string;
 };
 
@@ -35,6 +40,20 @@ export const nestedRealtimeDemo = inngest.createFunction(
   async ({ event, step, publish }) => {
     await step.run("publish message", async () => {
       await publish(secondDemoChannel().message({ message: event.data.message }));
+    });
+  }
+);
+
+export const userRealtimeDemo = inngest.createFunction(
+  { id: "demo-user-stream", name: "Realtime user-scoped pubsub" },
+  { event: "demo/realtime-user" },
+  async ({ event, step, publish }) => {
+    await step.run("publish user message", async () => {
+      await publish(
+        userChannel(event.data.userId).message({
+          message: event.data.message,
+        })
+      );
     });
   }
 );

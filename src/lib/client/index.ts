@@ -7,6 +7,8 @@ export {
 } from "./hooks.js";
 export type {
   ChannelInput,
+  RealtimeClientFailureContext,
+  RealtimeClientFailureSource,
   HealthPayload,
   HealthStatus,
   ReactiveCurrent,

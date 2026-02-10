@@ -26,6 +26,21 @@ export type HealthPayload = {
   detail?: string;
 };
 
+export type RealtimeClientFailureSource =
+  | "health"
+  | "transport-close"
+  | "transport-error";
+
+export type RealtimeClientFailureContext = {
+  endpoint: string;
+  channelId: string;
+  source: RealtimeClientFailureSource;
+  message?: string;
+  status?: number;
+  statusText?: string;
+  health?: HealthPayload;
+};
+
 /**
  * Svelte 5-compatible state wrapper from `fromStore(...)`.
  * Consumers can read values with `.current` instead of `$store` syntax.
@@ -42,7 +57,7 @@ export type RealtimeRequestParams = Record<string, string | number | boolean | n
 
 export type RealtimeSubscription<TChannel extends ChannelInput = ChannelInput> = {
   channel: TChannel;
-  channelArgs?: unknown[];
+  channelParams?: string;
   topics?: TopicKey<TChannel>[];
   params?: RealtimeRequestParams;
 };
@@ -56,6 +71,7 @@ export type RealtimeResolvedSubscription = {
 export type RealtimeManagerProps = {
   endpoint?: string;
   subscriptions: RealtimeSubscription[];
+  onFailure?: (failure: RealtimeClientFailureContext) => void | Promise<void>;
   children?: Snippet;
 };
 
