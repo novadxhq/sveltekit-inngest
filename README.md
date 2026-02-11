@@ -1,32 +1,33 @@
 # sveltekit-inngest
 
-`sveltekit-inngest` gives you typed realtime subscriptions in SvelteKit using Inngest + SSE.
+Typed realtime subscriptions for SvelteKit using Inngest + SSE.
 
-This version is **bus-first**:
+This package is bus-first:
 
 - one global SSE endpoint
-- channel registry on the server
+- static server channel registry
 - multi-channel subscriptions in one `RealtimeManager`
 - per-channel topic authorization
+- optional per-message reauthorization (fail-closed)
 
-It is built for Svelte 5 and uses state-first reads (`.current`) instead of `$store` syntax.
+The client API targets Svelte 5 state-first reads (`.current`) instead of `$store` syntax.
 
 ## Features
 
-- **Typed topic payloads** from `@inngest/realtime` channel definitions
-- **Global bus endpoint** with static channel registry
-- **Per-channel ACL** with topic filtering (`allowedTopics`)
-- **Optional per-message reauthorization** for fail-closed auth rechecks
-- **Optional server/client failure callbacks** with message override support
-- **Svelte 5 state-first API** via `getRealtimeBusState()` and `getRealtimeBusTopicState()`
-- **Reactive multi-channel manager** with add/remove subscription diffing
-- **Built-in health events** (`connecting`, `connected`, `degraded`)
+- Typed topic payloads from `@inngest/realtime` channel definitions
+- One global realtime endpoint with channel routing
+- Per-channel auth with topic filtering (`allowedTopics`)
+- Optional per-message reauthorization before each emit
+- Optional server and client failure callbacks
+- Svelte 5 bus hooks: `getRealtimeBusState()` and `getRealtimeBusTopicState()`
+- Multi-subscription diffing in `RealtimeManager`
+- Built-in health events: `connecting`, `connected`, `degraded`
 
 ## Requirements
 
-This package is intended for **Svelte 5 + SvelteKit** projects and expects these peer dependencies:
+Peer dependencies:
 
-- `svelte`
+- `svelte` (Svelte 5)
 - `@sveltejs/kit`
 - `sveltekit-sse`
 - `@inngest/realtime`
@@ -42,9 +43,9 @@ pnpm add sveltekit-inngest
 npm install sveltekit-inngest
 ```
 
-## Quick Start
+## Quick Start (Install to Live Events)
 
-### 1. Define your channels/topics
+### 1. Define channels and topics
 
 ```ts
 // src/lib/realtime/channels.ts
@@ -67,18 +68,60 @@ export const demoChannel = channel("demo")
   .addTopic(messageTopic)
   .addTopic(adminMessageTopic);
 
-export const secondDemoChannel = channel("second-demo").addTopic(messageTopic);
 export const userChannel = channel((userId: string) => `user:${userId}`).addTopic(
   messageTopic
 );
 ```
 
-### 2. Create one global realtime endpoint
+### 2. Configure Inngest with realtime middleware
+
+```ts
+// src/lib/server/inngest.ts
+import { Inngest } from "inngest";
+import { realtimeMiddleware } from "@inngest/realtime/middleware";
+
+export const inngest = new Inngest({
+  id: "my-app",
+  middleware: [realtimeMiddleware()],
+});
+```
+
+### 3. Publish to topics from an Inngest function
+
+```ts
+// src/lib/server/functions.ts
+import { inngest } from "$lib/server/inngest";
+import { demoChannel } from "$lib/realtime/channels";
+
+export const demoRealtime = inngest.createFunction(
+  { id: "demo-realtime" },
+  { event: "app/demo.message" },
+  async ({ event, publish }) => {
+    await publish(demoChannel().message({ message: event.data.message }));
+  }
+);
+```
+
+### 4. Expose Inngest serve endpoint
+
+```ts
+// src/routes/api/inngest/+server.ts
+import { serve } from "inngest/sveltekit";
+import { inngest } from "$lib/server/inngest";
+import { demoRealtime } from "$lib/server/functions";
+
+export const { GET, POST, PUT } = serve({
+  client: inngest,
+  functions: [demoRealtime],
+});
+```
+
+### 5. Create one global realtime endpoint
 
 ```ts
 // src/routes/api/events/+server.ts
 import { createRealtimeEndpoint } from "sveltekit-inngest/server";
-import { demoChannel, secondDemoChannel, userChannel } from "$lib/realtime/channels";
+import { demoChannel, userChannel } from "$lib/realtime/channels";
 import { inngest } from "$lib/server/inngest";
 
 export const POST = createRealtimeEndpoint({
@@ -89,7 +132,7 @@ export const POST = createRealtimeEndpoint({
       channel: demoChannel,
       authorize: ({ locals, topics }) => {
         if (!locals?.user) {
-          throw new Error("unable to connect wtih no locals");
+          throw new Error("Missing authenticated user");
         }
 
         if (locals.user.role === "admin") return true;
@@ -99,17 +142,12 @@ export const POST = createRealtimeEndpoint({
         };
       },
     },
-    "second-demo": {
-      channel: secondDemoChannel,
-      authorize: () => true,
-    },
     user: {
       channel: userChannel,
       channelParams: (_event, requestedChannelId) => {
-        const userId = requestedChannelId.startsWith("user:")
+        return requestedChannelId.startsWith("user:")
           ? requestedChannelId.slice("user:".length)
           : "";
-        return userId;
       },
       authorize: () => true,
     },
@@ -121,29 +159,30 @@ export const POST = createRealtimeEndpoint({
 });
 ```
 
-### 3. Provide subscriptions with `RealtimeManager`
+### 6. Provide subscriptions with `RealtimeManager`
 
 ```svelte
+<!-- src/routes/+page.svelte -->
 <script lang="ts">
   import { RealtimeManager } from "sveltekit-inngest/client";
-  import { demoChannel, secondDemoChannel, userChannel } from "$lib/realtime/channels";
-  import Panels from "./Panels.svelte";
+  import { demoChannel, userChannel } from "$lib/realtime/channels";
+  import RealtimePanel from "./realtime-panel.svelte";
 
   const subscriptions = [
     { channel: demoChannel },
-    { channel: secondDemoChannel },
     { channel: userChannel, channelParams: "alice" },
   ];
 </script>
 
 <RealtimeManager endpoint="/api/events" {subscriptions}>
-  <Panels />
+  <RealtimePanel />
 </RealtimeManager>
 ```
 
-### 4. Read bus health and topic state
+### 7. Read health and topic state from hooks
 
 ```svelte
+<!-- src/routes/realtime-panel.svelte -->
 <script lang="ts">
   import {
     getRealtimeBusState,
@@ -164,106 +203,277 @@ export const POST = createRealtimeEndpoint({
   );
 </script>
 
-<p>{health.current?.status ?? "connecting"}</p>
+<p>Connection: {health.current?.status ?? "connecting"}</p>
+<pre>{JSON.stringify(message.current, null, 2)}</pre>
+<pre>{JSON.stringify(adminMessage.current, null, 2)}</pre>
 ```
 
-## API
+### 8. Send an event
+
+Send `app/demo.message` to Inngest (CLI/UI/API) with payload:
+
+```json
+{
+  "message": "hello realtime"
+}
+```
+
+## API Reference
+
+### Import paths
+
+| Import path | Exports |
+| --- | --- |
+| `sveltekit-inngest` | Client exports (`RealtimeManager`, `getRealtimeBus*`, client types) |
+| `sveltekit-inngest/client` | Same as root client exports |
+| `sveltekit-inngest/server` | `createRealtimeEndpoint` and server types |
+| `sveltekit-inngest/server/createRealtimeEndpoint` | Direct endpoint factory and server types |
+
+### Client exports
+
+Runtime exports:
+
+- `RealtimeManager`
+- `getRealtimeBus()`
+- `getRealtimeBusState(channel, channelParams?)`
+- `getRealtimeBusTopicJson(channel, topic, options?)`
+- `getRealtimeBusTopicState(channel, topic, options?)`
+
+Type exports include:
+
+- `RealtimeManagerProps`, `RealtimeSubscription`, `RealtimeResolvedSubscription`
+- `RealtimeClientFailureContext`, `RealtimeClientFailureSource`
+- `HealthPayload`, `HealthStatus`
+- `TopicKey<TChannel>`, `TopicData<TChannel, TTopic>`
+- `RealtimeTopicEnvelope`, `RealtimeTopicMessage`
+- `RealtimeRequestParams`, `ReactiveCurrent`, `RealtimeTopicState`, `RealtimeHealthState`
+
+### Server exports
+
+Runtime export:
+
+- `createRealtimeEndpoint(options)`
+
+Type exports include:
+
+- `RealtimeEndpointOptions`
+- `RealtimeChannelConfig`
+- `RealtimeAuthorizeContext`
+- `RealtimeReauthorizeContext`
+- `RealtimeHealthCheckOptions`
+- `RealtimeServerFailureContext`
+- `RealtimeServerFailureStage`
 
 ### `createRealtimeEndpoint(options)`
 
-Creates a SvelteKit `POST` handler for the global realtime bus.
+Creates a SvelteKit `POST` request handler for the global realtime bus.
 
 ```ts
 createRealtimeEndpoint({
   inngest,
   channels: {
-    [channelId]: {
+    [registryKey]: {
       channel,
       channelParams, // optional: string | (event, requestedChannelId, requestParams) => string | Promise<string>
-      reauthorizeOnEachMessage, // optional: channel override
-      reauthorize, // optional: per-message guard, must return true to continue
-      authorize,   // required
+      authorize, // required
+      reauthorize, // optional
+      reauthorizeOnEachMessage, // optional channel override
     },
   },
-  reauthorizeOnEachMessage, // optional: endpoint default (default false)
-  healthCheck, // optional: { enabled?: boolean; intervalMs?: number } (interval default: 15_000)
-  onFailure, // optional: (failure) => void | { message?: string } | Promise<void | { message?: string }>
+  reauthorizeOnEachMessage, // optional global default
+  healthCheck, // optional
+  onFailure, // optional
 });
 ```
 
-`authorize(context)` returns:
+#### Endpoint options
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `inngest` | Yes | Inngest client used for token generation and subscription |
+| `channels` | Yes | Static channel registry used to resolve incoming `payload.channel` |
+| `reauthorizeOnEachMessage` | No | Global default for per-message reauthorization (`false` by default) |
+| `healthCheck.enabled` | No | Enable/disable interval health ticks (`true` default) |
+| `healthCheck.intervalMs` | No | Health tick interval in ms (`15000` default) |
+| `onFailure` | No | Failure hook for request-time and stream-time errors |
+
+#### Channel config options
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `channel` | Yes | `Realtime.Channel` or channel definition function |
+| `channelParams` | No | Static string or resolver for channel builders |
+| `authorize` | Yes | Initial request authorization callback |
+| `reauthorize` | No | Optional per-message guard callback |
+| `reauthorizeOnEachMessage` | No | Per-channel override of global reauth behavior |
+
+#### `authorize(context)` result contract
 
 - `true`: allow all requested topics
 - `false`: deny request (`403`)
-- `{ allowedTopics }`: allow subset of requested topics
+- `{ allowedTopics }`: allow only subset of requested topics
 
-`authorize` context includes:
+#### `authorize` context
 
-- `event`
-- `locals`
-- `request`
+| Field | Description |
+| --- | --- |
+| `event` | Full SvelteKit `RequestEvent` |
+| `locals` | `event.locals` |
+| `request` | Raw `Request` |
+| `channelId` | Resolved channel name |
+| `topics` | Requested topic list |
+| `params` | Sanitized request params (`string \| number \| boolean \| null`) |
+
+#### `reauthorize(context)` additions
+
+`reauthorize` receives the same fields as `authorize`, plus:
+
+| Field | Description |
+| --- | --- |
+| `messageTopic` | Topic from the current realtime message |
+| `message` | Raw message envelope |
+
+#### `onFailure(failure)`
+
+Called for request and stream failures.
+
+- Return `void` to keep the original message.
+- Return `{ message }` to override the client-facing message.
+
+Override behavior:
+
+- request failures return JSON `{ error: message }`
+- stream failures use `health.detail = message`
+
+`failure.stage` is one of:
+
+- `request-validation`
+- `channel-resolution`
+- `topic-validation`
+- `authorization`
+- `reauthorization`
+- `stream`
+
+### `<RealtimeManager />`
+
+Props:
+
+| Prop | Required | Description |
+| --- | --- | --- |
+| `endpoint` | No | Realtime endpoint URL. Default: `"/api/events"` |
+| `subscriptions` | Yes | Array of `RealtimeSubscription` |
+| `onFailure` | No | Client-side failure callback |
+| `children` | No | Svelte snippet children |
+
+`RealtimeSubscription` shape:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `channel` | Yes | `Realtime.Channel` or channel definition |
+| `channelParams` | No | String param for channel builders |
+| `topics` | No | Explicit topic list (defaults to all channel topics) |
+| `params` | No | Request params sent to endpoint |
+
+Notes:
+
+- Duplicate subscriptions resolving to the same `channelId` throw immediately.
+- Topic lists are normalized (deduped and sorted) before connection signatures are computed.
+
+### Hook reference
+
+#### `getRealtimeBus()`
+
+Returns the full bus context from `RealtimeManager`.
+
+Throws if called outside a `RealtimeManager` subtree.
+
+#### `getRealtimeBusState(channel, channelParams?)`
+
+Returns channel-scoped context:
+
 - `channelId`
 - `topics`
-- `params`
+- `select(eventName)` from `sveltekit-sse`
+- `health` as Svelte 5 state wrapper (`health.current`)
 
-`reauthorize(context)` is optional and returns `boolean | Promise<boolean>`.
-It receives the same fields as `authorize` plus:
+Throws when the requested channel is not currently active.
 
-- `messageTopic`
-- `message`
+#### `getRealtimeBusTopicJson(channel, topic, options?)`
 
-`reauthorizeOnEachMessage` precedence:
+Returns `Readable<TOutput | null>` for the latest parsed message matching the selected topic.
 
-- `channels[channelId].reauthorizeOnEachMessage`
-- endpoint `reauthorizeOnEachMessage`
-- default `false`
+`options`:
 
-When enabled, per-message checks run right before emit:
+| Option | Description |
+| --- | --- |
+| `channelParams` | Channel builder param for composite channels |
+| `map(message)` | Map envelope to custom output |
+| `or({ error, raw, previous })` | JSON parse fallback to recover/retain value |
 
-- message topic is validated (must exist, be configured, and be part of the initial authorized topic set)
-- if `reauthorize` exists, it is called with `topics: [message.topic]` and stream continues only when it returns exactly `true`
-- if `reauthorize` is not provided, `authorize` is re-run as fallback with `topics: [message.topic]`
+#### `getRealtimeBusTopicState(channel, topic, options?)`
 
-If checks deny, throw, or message topic is invalid, the stream fails closed (degraded health event + close).
+Same behavior as `getRealtimeBusTopicJson`, but wrapped in Svelte 5 state-first shape:
 
-`onFailure(failure)` is endpoint-level and optional. It is called for request-time
-and stream-time failures (including explicit deny results).
+- read with `.current`
+- type: `ReactiveCurrent<TOutput | null>`
 
-- return `void` to keep the original message
-- return `{ message }` to override what the client receives
+## Request Payload
 
-Message override behavior:
+Realtime manager sends this JSON payload to your endpoint:
 
-- request failures: returned in JSON as `{ error: message }`
-- stream failures: returned in `health` events as `detail`
-
-Failure context includes:
-
-- `event`
-- `locals`
-- `request`
-- `stage`: `"request-validation" | "channel-resolution" | "topic-validation" | "authorization" | "reauthorization" | "stream"`
-- `message`
-- optional `status`, `error`, `requestedChannelId`, `channelId`, `topics`, `params`
-
-No locals example:
-
-```ts
-authorize: ({ locals }) => {
-  if (!locals?.user) {
-    throw new Error("unable to connect wtih no locals");
-  }
-
-  return true;
+```json
+{
+  "channel": "demo",
+  "topics": ["message", "admin-message"],
+  "params": { "scope": "limited" }
 }
 ```
 
-Composite channel matching uses resolved channel names. For each configured
-channel entry, `channelParams` is resolved first, then the endpoint picks the
-entry whose resolved `channel.name` matches `payload.channel`. If none match,
-the request returns `400`; if multiple match, the request returns `500`.
+Rules:
 
-Example:
+- `channel` is required
+- `topics` is optional (defaults to all topics in the resolved channel)
+- `params` values are normalized to primitives or `null`
+
+## Runtime Behavior and Status Matrix
+
+### Request-time status codes
+
+| Status | Stage | Meaning |
+| --- | --- | --- |
+| `400` | `request-validation` | Invalid JSON body or missing `channel` |
+| `400` | `channel-resolution` | Requested channel is not available |
+| `500` | `channel-resolution` | Multiple registry entries match requested channel |
+| `400` | `topic-validation` | Unknown requested topics |
+| `403` | `authorization` | `authorize` denied or filtered to zero topics |
+| `500` | `channel-resolution` | Channel builder/params resolution failure |
+
+### Health stream semantics
+
+Server emits `health` events:
+
+- `connecting`: stream bootstrap started
+- `connected`: stream is live
+- `degraded`: failure occurred; stream closes fail-closed
+
+When `degraded`, `health.detail` carries the resolved error message (including `onFailure` overrides).
+
+### Per-message reauthorization semantics
+
+If `reauthorizeOnEachMessage` is enabled, each message is checked before emit:
+
+1. message must include a valid configured topic
+2. topic must be in originally authorized topic set
+3. if `reauthorize` exists, it must return exactly `true`
+4. otherwise `authorize` is re-run with `topics: [message.topic]`
+
+Any failure degrades and closes the stream before the message is emitted.
+
+## Patterns
+
+### Composite channels
+
+Composite channel entries are matched by resolved channel name.
 
 ```ts
 const userChannel = channel((userId: string) => `user:${userId}`);
@@ -274,8 +484,7 @@ createRealtimeEndpoint({
     user: {
       channel: userChannel,
       channelParams: (_event, requestedChannelId) => {
-        const userId = requestedChannelId.slice("user:".length);
-        return userId;
+        return requestedChannelId.slice("user:".length);
       },
       authorize: () => true,
     },
@@ -283,69 +492,97 @@ createRealtimeEndpoint({
 });
 ```
 
-### `<RealtimeManager />`
+### Nested `RealtimeManager` components
 
-Bus manager for one endpoint and many channel subscriptions.
+You can nest managers to scope subscriptions by subtree. Each manager creates and owns connections for its own `subscriptions` list.
 
-Props:
+## Local Demo Setup
 
-- `endpoint?: string` (default: `"/api/events"`)
-- `subscriptions: RealtimeSubscription[]`
-- `onFailure?: (failure) => void | Promise<void>`
-- `children?: Snippet`
+This repository includes a full demo app.
 
-`RealtimeSubscription`:
+### 1. Configure env
 
-```ts
-type RealtimeSubscription = {
-  channel: Realtime.Channel | Realtime.Channel.Definition;
-  channelParams?: string;
-  topics?: string[];
-  params?: Record<string, string | number | boolean | null>;
-};
+```bash
+cp example.env .env
 ```
 
-Duplicate subscriptions resolving to the same channel ID throw immediately.
+`example.env` includes:
 
-`onFailure` failure context includes:
+- `INNGEST_DEV`
+- `INNGEST_BASE_URL`
+- `INNGEST_EVENT_KEY`
+- optional `INNGEST_SIGNING_KEY`
 
-- `endpoint`
-- `channelId`
-- `source`: `"health" | "transport-close" | "transport-error"`
-- optional `message`, `status`, `statusText`, `health`
+### 2. Start local Inngest dev server
 
-### Hooks
-
-- `getRealtimeBus()`
-- `getRealtimeBusState(channel, channelParams?)`
-- `getRealtimeBusTopicJson(channel, topic, options?)`
-- `getRealtimeBusTopicState(channel, topic, options?)`
-
-`getRealtimeBusTopicState` returns `.current` state values (Svelte 5-friendly).
-
-## Request Payload
-
-Client request payload shape is unchanged:
-
-```json
-{
-  "channel": "demo",
-  "topics": ["message", "admin-message"],
-  "params": { "scope": "limited" }
-}
+```bash
+docker compose up
 ```
 
-Notes:
+This uses `/Users/whodges/dev/novadx/sveltekit-inngest/docker-compose.yaml` and points Inngest to `http://host.docker.internal:5173/api/inngest`.
 
-- `channel` is required
-- `topics` is optional (defaults to all topics in that channel)
-- unknown channels/topics return `400`
-- filtered-to-zero authorized topics returns `403`
-- when per-message reauth is enabled, failures close the stream before the message is emitted
+### 3. Run SvelteKit app
 
-## Breaking Changes
+```bash
+bun run dev
+```
 
-This release is intentionally bus-first and not backward compatible with single-channel APIs.
+Then open:
+
+- `http://localhost:5173/` (main demo)
+- `http://localhost:5173/nested` (nested manager demo)
+
+## Development and Release Commands
+
+```bash
+# type and svelte diagnostics
+bun run check
+
+# package-quality build + publint
+bun run build
+
+# release gate (check + build + npm pack dry run)
+bun run release:verify
+```
+
+Test scripts are intentionally not included right now.
+
+## Troubleshooting
+
+### `getRealtimeBus() requires <RealtimeManager>...`
+
+A hook is being called outside a `RealtimeManager` subtree.
+
+### `Realtime channel "..." is not active`
+
+The requested channel (or `channelParams`) does not match any active subscription.
+
+### Request fails with `400 Requested channel is not available`
+
+- `payload.channel` does not match any resolved registry channel name
+- `channelParams` resolver produced unexpected channel name
+
+### Request fails with `500 Realtime channel registry is ambiguous`
+
+Multiple registry entries resolve to the same `channel.name`. Ensure one unique match per requested channel.
+
+### Stream degrades immediately
+
+Check `health.detail` and server `onFailure` logs. Common causes:
+
+- per-message reauthorization denied
+- invalid emitted topic envelope
+- thrown error inside auth callbacks
+
+### Client receives no topic updates
+
+- ensure topic is included in subscription or allowed by auth filter
+- verify published messages include matching `topic`
+- verify channel IDs and `channelParams` are consistent between client and server
+
+## Breaking Changes (Bus-First Release)
+
+This release is intentionally not backward compatible with older single-channel APIs.
 
 Removed client APIs:
 
@@ -360,14 +597,13 @@ Removed server shape:
 
 Migration note:
 
-- `channelArgs` has been renamed to `channelParams` in both server channel
-  config and client subscriptions/hooks. No compatibility alias is provided.
+- `channelArgs` was renamed to `channelParams` (server + client). No alias is provided.
 
 Use:
 
 - `createRealtimeEndpoint({ channels: { ... } })`
-- `RealtimeManager({ subscriptions: [...] })`
-- bus hooks (`getRealtimeBus*`)
+- `<RealtimeManager subscriptions={...} />`
+- `getRealtimeBus*` hooks
 
 ## License
 
