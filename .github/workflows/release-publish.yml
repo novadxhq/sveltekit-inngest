@@ -3,6 +3,12 @@ name: Release Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, for example 1.2.3 or 1.2.3-beta.1
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -10,7 +16,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: release-publish-${{ github.event.release.id }}
+  group: release-publish-${{ github.event_name }}-${{ github.event.release.id || inputs.version }}
   cancel-in-progress: false
 
 jobs:
@@ -41,16 +47,21 @@ jobs:
           npm install -g npm@latest
           npm --version
 
-      - name: Derive version from release tag
+      - name: Derive version
         shell: bash
         run: |
           set -euo pipefail
 
-          TAG="${{ github.event.release.tag_name }}"
-          VERSION="${TAG#v}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RAW_VERSION="${{ inputs.version }}"
+          else
+            RAW_VERSION="${{ github.event.release.tag_name }}"
+          fi
+
+          VERSION="${RAW_VERSION#v}"
 
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid release tag '$TAG'. Expected semver like v1.2.3 or 1.2.3." >&2
+            echo "Invalid version '$RAW_VERSION'. Expected semver like v1.2.3 or 1.2.3." >&2
             exit 1
           fi
 
