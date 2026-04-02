@@ -1,21 +1,23 @@
-import type { Realtime } from "@inngest/realtime";
+import type { Realtime } from "inngest/realtime";
 import type { Snippet } from "svelte";
 
-export type ChannelInput = Realtime.Channel | Realtime.Channel.Definition;
+export type ChannelInput = Realtime.ChannelInstance | Realtime.ChannelDef;
 
 export type ResolvedChannel<T extends ChannelInput> =
-  T extends Realtime.Channel.Definition
-    ? Realtime.Channel.Definition.AsChannel<T>
-    : T extends Realtime.Channel
+  T extends Realtime.ChannelDef
+    ? ReturnType<T>
+    : T extends Realtime.ChannelInstance
       ? T
       : never;
 
-type ChannelTopics<T extends ChannelInput> = Realtime.Channel.InferTopics<ResolvedChannel<T>>;
+type ChannelTopics<T extends ChannelInput> = ResolvedChannel<T>["topics"];
 
 export type TopicKey<T extends ChannelInput> = keyof ChannelTopics<T> & string;
 
 export type TopicData<T extends ChannelInput, K extends TopicKey<T>> =
-  Realtime.Topic.InferSubscribe<ChannelTopics<T>[K]>;
+  ChannelTopics<T>[K] extends Realtime.TopicConfig
+    ? Realtime.InferTopicData<ChannelTopics<T>[K]>
+    : never;
 
 export type HealthStatus = "connecting" | "connected" | "degraded";
 

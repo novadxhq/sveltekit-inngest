@@ -1,5 +1,5 @@
 import { json, type RequestEvent, type RequestHandler } from "@sveltejs/kit";
-import { getSubscriptionToken, subscribe } from "@inngest/realtime";
+import { getSubscriptionToken, subscribe } from "inngest/realtime";
 import type { Inngest } from "inngest";
 import { produce, type Connection } from "sveltekit-sse";
 import type {

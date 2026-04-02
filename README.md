@@ -14,7 +14,7 @@ The client API targets Svelte 5 state-first reads (`.current`) instead of `$stor
 
 ## Features
 
-- Typed topic payloads from `@inngest/realtime` channel definitions
+- Typed topic payloads from `inngest/realtime` channel definitions
 - One global realtime endpoint with channel routing
 - Per-channel auth with topic filtering (`allowedTopics`)
 - Optional per-message reauthorization before each emit
@@ -30,7 +30,6 @@ Peer dependencies:
 - `svelte` (Svelte 5)
 - `@sveltejs/kit`
 - `sveltekit-sse`
-- `@inngest/realtime`
 - `inngest`
 
 ## Installation
@@ -49,40 +48,51 @@ npm install sveltekit-inngest
 
 ```ts
 // src/lib/realtime/channels.ts
-import { channel, topic } from "@inngest/realtime";
+import { realtime } from "inngest/realtime";
 import { z } from "zod";
 
-const messageTopic = topic("message").schema(
-  z.object({
-    message: z.string(),
-  })
-);
+const messageSchema = z.object({
+  message: z.string(),
+});
 
-const adminMessageTopic = topic("admin-message").schema(
-  z.object({
-    message: z.string(),
-  })
-);
+export const demoChannel = realtime.channel({
+  name: "demo",
+  topics: {
+    message: {
+      schema: messageSchema,
+    },
+    "admin-message": {
+      schema: messageSchema,
+    },
+  },
+});
 
-export const demoChannel = channel("demo")
-  .addTopic(messageTopic)
-  .addTopic(adminMessageTopic);
-
-export const userChannel = channel((userId: string) => `user:${userId}`).addTopic(
-  messageTopic
-);
+export const userChannel = realtime.channel({
+  name: (userId: string) => `user:${userId}`,
+  topics: {
+    message: {
+      schema: messageSchema,
+    },
+  },
+});
 ```
 
-### 2. Configure Inngest with realtime middleware
+### 2. Configure Inngest
 
 ```ts
 // src/lib/server/inngest.ts
-import { Inngest } from "inngest";
-import { realtimeMiddleware } from "@inngest/realtime/middleware";
+import { Inngest, eventType, staticSchema } from "inngest";
+
+type DemoMessageEvent = {
+  message: string;
+};
+
+export const demoMessageEvent = eventType("app/demo.message", {
+  schema: staticSchema<DemoMessageEvent>(),
+});
 
 export const inngest = new Inngest({
   id: "my-app",
-  middleware: [realtimeMiddleware()],
 });
 ```
 
@@ -90,14 +100,15 @@ export const inngest = new Inngest({
 
 ```ts
 // src/lib/server/functions.ts
-import { inngest } from "$lib/server/inngest";
+import { demoMessageEvent, inngest } from "$lib/server/inngest";
 import { demoChannel } from "$lib/realtime/channels";
 
 export const demoRealtime = inngest.createFunction(
-  { id: "demo-realtime" },
-  { event: "app/demo.message" },
-  async ({ event, publish }) => {
-    await publish(demoChannel().message({ message: event.data.message }));
+  { id: "demo-realtime", triggers: [demoMessageEvent] },
+  async ({ event, step }) => {
+    await step.realtime.publish("publish message", demoChannel.message, {
+      message: event.data.message,
+    });
   }
 );
 ```
@@ -210,12 +221,14 @@ export const POST = createRealtimeEndpoint({
 
 ### 8. Send an event
 
-Send `app/demo.message` to Inngest (CLI/UI/API) with payload:
+Send `demoMessageEvent.create(...)` to Inngest, for example:
 
-```json
-{
-  "message": "hello realtime"
-}
+```ts
+await inngest.send(
+  demoMessageEvent.create({
+    message: "hello realtime",
+  })
+);
 ```
 
 ## API Reference
@@ -476,7 +489,10 @@ Any failure degrades and closes the stream before the message is emitted.
 Composite channel entries are matched by resolved channel name.
 
 ```ts
-const userChannel = channel((userId: string) => `user:${userId}`);
+const userChannel = realtime.channel({
+  name: (userId: string) => `user:${userId}`,
+  topics: {},
+});
 
 createRealtimeEndpoint({
   inngest,

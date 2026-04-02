@@ -1,5 +1,4 @@
-import { EventSchemas, Inngest } from "inngest";
-import { realtimeMiddleware } from "@inngest/realtime/middleware";
+import { Inngest, eventType, staticSchema } from "inngest";
 import { env } from "$env/dynamic/private";
 import { dev } from "$app/environment";
 import type { DemoEvent, UserDemoEvent } from "./demo.ts";
@@ -10,28 +9,25 @@ const isDev =
 const baseUrl = env.INNGEST_BASE_URL ?? (isDev ? "http://localhost:8288" : undefined);
 const eventKey = env.INNGEST_EVENT_KEY ?? (isDev ? "dev" : undefined);
 
-type Events = {
-  "demo/realtime": {
-    data: DemoEvent;
-  };
-  "demo/realtime-admin": {
-    data: DemoEvent;
-  };
-  "demo/nested-realtime": {
-    data: DemoEvent;
-  };
-  "demo/realtime-user": {
-    data: UserDemoEvent;
-  };
-};
+export const demoRealtimeEvent = eventType("demo/realtime", {
+  schema: staticSchema<DemoEvent>(),
+});
 
-const schemas = new EventSchemas().fromRecord<Events>();
+export const demoRealtimeAdminEvent = eventType("demo/realtime-admin", {
+  schema: staticSchema<DemoEvent>(),
+});
+
+export const demoNestedRealtimeEvent = eventType("demo/nested-realtime", {
+  schema: staticSchema<DemoEvent>(),
+});
+
+export const demoRealtimeUserEvent = eventType("demo/realtime-user", {
+  schema: staticSchema<UserDemoEvent>(),
+});
 
 export const inngest = new Inngest({
   id: "svelte-inngest-demo",
   eventKey,
   baseUrl,
   isDev,
-  schemas: schemas,
-  middleware: [realtimeMiddleware()],
 });
