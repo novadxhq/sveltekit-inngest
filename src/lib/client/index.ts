@@ -14,6 +14,7 @@ export type {
   ReactiveCurrent,
   RealtimeBusState,
   RealtimeManagerProps,
+  RealtimeOnMessage,
   RealtimeRequestParams,
   RealtimeHealthState,
   RealtimeResolvedSubscription,

@@ -1,6 +1,10 @@
 import { onDestroy } from "svelte";
 import { derived, fromStore, type Readable } from "svelte/store";
-import { getRealtimeContext, type RealtimeBusChannelContextValue } from "./context.js";
+import {
+  getRealtimeContext,
+  type RealtimeBusChannelContextValue,
+  type RealtimeBusContextValue,
+} from "./context.js";
 import type {
   ChannelInput,
   RealtimeBusState,
@@ -19,13 +23,25 @@ type JsonPredicatePayload<T> = {
   previous: T | null;
 };
 
+/**
+ * Options for retained-value topic helpers such as
+ * `getRealtimeBusTopicJson(...)` and `getRealtimeBusTopicState(...)`.
+ */
 type TopicJsonOptions<
   TChannel extends ChannelInput,
   TTopic extends TopicKey<TChannel>,
   TOutput,
 > = {
+  /** Parameter used when `channel` is a channel definition function. */
   channelParams?: string;
+  /** Maps the parsed message envelope into a custom retained output shape. */
   map?: (message: RealtimeTopicMessage<TChannel, TTopic>) => TOutput;
+  /**
+   * Fallback invoked when JSON parsing fails.
+   *
+   * Return the previous value to preserve the last retained message, or `null`
+   * to clear it.
+   */
   or?: (
     payload: JsonPredicatePayload<RealtimeTopicMessage<TChannel, TTopic>>
   ) => RealtimeTopicMessage<TChannel, TTopic> | null;
@@ -47,7 +63,21 @@ const resolveChannel = <TInput extends ChannelInput>(
   return input as ResolvedChannel<TInput>;
 };
 
-export function getRealtimeBus() {
+/**
+ * Returns the realtime bus context from the nearest `<RealtimeManager />`.
+ *
+ * Most callers should prefer `getRealtimeBusState(channel, channelParams?)`
+ * unless they need low-level access to the full channel registry.
+ *
+ * @example
+ * ```ts
+ * const bus = getRealtimeBus();
+ * const activeChannels = Object.keys(bus.channelsState?.current ?? {});
+ * ```
+ *
+ * @throws {Error} If called outside a `RealtimeManager` subtree.
+ */
+export function getRealtimeBus(): RealtimeBusContextValue {
   const context = getRealtimeContext();
   if (!context) {
     throw new Error(
@@ -102,6 +132,29 @@ const createParsedMessagesFactory = <TChannel extends ChannelInput>(
   };
 };
 
+/**
+ * Returns the active channel-scoped realtime API for a subscribed channel.
+ *
+ * This is the preferred client entrypoint for handling realtime messages.
+ * Use `onMessage(...)` for live event handling and `health.current` for
+ * connection status.
+ *
+ * When `channel` is a channel definition function, `channelParams` must match
+ * the value used in the corresponding `RealtimeManager` subscription.
+ *
+ * @example
+ * ```ts
+ * const { health, onMessage } = getRealtimeBusState(demoChannel);
+ *
+ * onMessage("message", async (payload) => {
+ *   console.log(payload.message);
+ * });
+ * ```
+ *
+ * @param channel Channel instance or channel definition to read from.
+ * @param channelParams Parameter used when `channel` is a channel builder.
+ * @throws {Error} If the requested channel is not currently active.
+ */
 export function getRealtimeBusState<TChannel extends ChannelInput>(
   channel: TChannel,
   channelParams?: string
@@ -165,6 +218,28 @@ export function getRealtimeBusState<TChannel extends ChannelInput>(
   };
 }
 
+/**
+ * Returns a retained readable containing the latest parsed message for a topic.
+ *
+ * This helper is best for display-oriented UI that wants the latest known value.
+ * For side effects or live event handling, prefer `getRealtimeBusState(...).onMessage(...)`.
+ *
+ * @example
+ * ```ts
+ * const latestMessage = getRealtimeBusTopicJson(demoChannel, "message", {
+ *   map: (message) => message.data.message,
+ * });
+ *
+ * latestMessage.subscribe((value) => {
+ *   console.log(value);
+ * });
+ * ```
+ *
+ * @param channel Channel instance or channel definition to read from.
+ * @param topic Topic name whose latest message should be retained.
+ * @param options Optional retained-value mapping and parsing controls.
+ * @throws {Error} If the requested channel is not currently active.
+ */
 export function getRealtimeBusTopicJson<
   TChannel extends ChannelInput,
   TTopic extends TopicKey<TChannel>,
@@ -199,6 +274,26 @@ export function getRealtimeBusTopicJson<
   });
 }
 
+/**
+ * Returns the latest topic value wrapped in Svelte 5's `.current`-style access.
+ *
+ * This is the state-first variant of `getRealtimeBusTopicJson(...)`.
+ *
+ * @example
+ * ```ts
+ * const message = getRealtimeBusTopicState(demoChannel, "message");
+ * console.log(message.current?.data.message);
+ *
+ * const userMessage = getRealtimeBusTopicState(userChannel, "message", {
+ *   channelParams: "alice",
+ * });
+ * ```
+ *
+ * @param channel Channel instance or channel definition to read from.
+ * @param topic Topic name whose latest message should be retained.
+ * @param options Optional retained-value mapping and parsing controls.
+ * @throws {Error} If the requested channel is not currently active.
+ */
 export function getRealtimeBusTopicState<
   TChannel extends ChannelInput,
   TTopic extends TopicKey<TChannel>,
