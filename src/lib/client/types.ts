@@ -1,5 +1,6 @@
 import type { Realtime } from "inngest/realtime";
 import type { Snippet } from "svelte";
+import type { SourceSelect } from "sveltekit-sse";
 
 export type ChannelInput = Realtime.ChannelInstance | Realtime.ChannelDef;
 
@@ -55,6 +56,13 @@ export type RealtimeHealthState = ReactiveCurrent<HealthPayload | null>;
 
 export type RealtimeTopicState<T> = ReactiveCurrent<T | null>;
 
+export type RealtimeUnsubscribe = () => void;
+
+export type RealtimeTopicHandler<
+  TChannel extends ChannelInput,
+  TTopic extends TopicKey<TChannel>,
+> = (payload: TopicData<TChannel, TTopic>) => void | Promise<void>;
+
 export type RealtimeRequestParams = Record<string, string | number | boolean | null>;
 
 export type RealtimeSubscription<TChannel extends ChannelInput = ChannelInput> = {
@@ -75,6 +83,17 @@ export type RealtimeManagerProps = {
   subscriptions: RealtimeSubscription[];
   onFailure?: (failure: RealtimeClientFailureContext) => void | Promise<void>;
   children?: Snippet;
+};
+
+export type RealtimeBusState<TChannel extends ChannelInput> = {
+  channelId: string;
+  topics: TopicKey<TChannel>[];
+  select: SourceSelect;
+  health: RealtimeHealthState;
+  onMessage: <TTopic extends TopicKey<TChannel>>(
+    topic: TTopic,
+    handler: RealtimeTopicHandler<TChannel, TTopic>
+  ) => RealtimeUnsubscribe;
 };
 
 export type RealtimeRequestPayload = {

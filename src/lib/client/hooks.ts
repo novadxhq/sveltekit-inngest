@@ -1,11 +1,14 @@
+import { onDestroy } from "svelte";
 import { derived, fromStore, type Readable } from "svelte/store";
 import { getRealtimeContext, type RealtimeBusChannelContextValue } from "./context.js";
 import type {
   ChannelInput,
-  RealtimeHealthState,
+  RealtimeBusState,
+  RealtimeTopicHandler,
   RealtimeTopicEnvelope,
   RealtimeTopicMessage,
   RealtimeTopicState,
+  RealtimeUnsubscribe,
   ResolvedChannel,
   TopicKey,
 } from "./types.js";
@@ -74,19 +77,91 @@ const getChannelContext = <TChannel extends ChannelInput>(
   return channelContext;
 };
 
+const createParsedMessagesFactory = <TChannel extends ChannelInput>(
+  channelContext: RealtimeBusChannelContextValue
+) => {
+  let parsedMessages:
+    | Readable<RealtimeTopicMessage<TChannel, TopicKey<TChannel>> | null>
+    | undefined;
+
+  return () => {
+    if (parsedMessages) return parsedMessages;
+
+    parsedMessages =
+      channelContext.select("message").json<
+        RealtimeTopicMessage<TChannel, TopicKey<TChannel>>
+      >(
+        ({
+          previous,
+        }: {
+          previous: RealtimeTopicMessage<TChannel, TopicKey<TChannel>> | null;
+        }) => previous ?? null
+      );
+
+    return parsedMessages;
+  };
+};
+
 export function getRealtimeBusState<TChannel extends ChannelInput>(
   channel: TChannel,
   channelParams?: string
-): Omit<RealtimeBusChannelContextValue, "health"> & {
-  health: RealtimeHealthState;
-} {
+): RealtimeBusState<TChannel> {
   const channelContext = getChannelContext(channel, channelParams);
+  const getParsedMessages = createParsedMessagesFactory<TChannel>(channelContext);
+  const listenerStops = new Set<RealtimeUnsubscribe>();
+
+  try {
+    onDestroy(() => {
+      for (const stop of [...listenerStops]) {
+        stop();
+      }
+    });
+  } catch {
+    // Ignore when called outside component initialization.
+  }
 
   return {
     channelId: channelContext.channelId,
-    topics: channelContext.topics,
+    topics: channelContext.topics as TopicKey<TChannel>[],
     select: channelContext.select,
     health: channelContext.healthState ?? fromStore(channelContext.health),
+    onMessage: <TTopic extends TopicKey<TChannel>>(
+      topic: TTopic,
+      handler: RealtimeTopicHandler<TChannel, TTopic>
+    ) => {
+      let skipInitial = true;
+
+      const stop = getParsedMessages().subscribe((message) => {
+        if (skipInitial) {
+          skipInitial = false;
+          return;
+        }
+
+        if (!message || message.topic !== topic) return;
+
+        const typedMessage = message as RealtimeTopicMessage<TChannel, TTopic>;
+
+        void Promise.resolve(handler(typedMessage.data)).catch((error) => {
+          console.error(
+            `[sveltekit-inngest] onMessage handler failed for "${channelContext.channelId}:${String(topic)}".`,
+            error
+          );
+        });
+      });
+
+      let stopped = false;
+
+      const unsubscribe: RealtimeUnsubscribe = () => {
+        if (stopped) return;
+        stopped = true;
+        listenerStops.delete(unsubscribe);
+        stop();
+      };
+
+      listenerStops.add(unsubscribe);
+
+      return unsubscribe;
+    },
   };
 }
 
@@ -99,7 +174,7 @@ export function getRealtimeBusTopicJson<
   topic: TTopic,
   options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
 ): Readable<TOutput | null> {
-  const { select } = getRealtimeBusState(channel, options.channelParams);
+  const { select } = getChannelContext(channel, options.channelParams);
 
   const parsedMessages = select("message").json<RealtimeTopicMessage<TChannel, TTopic>>(
     options.or ??
