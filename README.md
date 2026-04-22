@@ -10,7 +10,9 @@ This package is bus-first:
 - per-channel topic authorization
 - optional per-message reauthorization (fail-closed)
 
-The client API targets Svelte 5 state-first reads (`.current`) instead of `$store` syntax.
+The preferred client API is `getRealtimeBusState(...).onMessage(...)` for handling
+live realtime events. Retained topic-state helpers are still available when you
+want the latest value as Svelte 5 state (`.current`) instead of `$store` syntax.
 
 ## Features
 
@@ -19,7 +21,8 @@ The client API targets Svelte 5 state-first reads (`.current`) instead of `$stor
 - Per-channel auth with topic filtering (`allowedTopics`)
 - Optional per-message reauthorization before each emit
 - Optional server and client failure callbacks
-- Svelte 5 bus hooks: `getRealtimeBusState()` and `getRealtimeBusTopicState()`
+- Preferred typed message handling with `getRealtimeBusState(...).onMessage(...)`
+- Optional retained-value reads with `getRealtimeBusTopicJson()` and deprecated `getRealtimeBusTopicState()`
 - Multi-subscription diffing in `RealtimeManager`
 - Built-in health events: `connecting`, `connected`, `degraded`
 
@@ -190,7 +193,7 @@ export const POST = createRealtimeEndpoint({
 </RealtimeManager>
 ```
 
-### 7. Read health and topic state from hooks
+### 7. Handle messages with `onMessage()` (preferred)
 
 ```svelte
 <!-- src/routes/realtime-panel.svelte -->
@@ -201,8 +204,14 @@ export const POST = createRealtimeEndpoint({
   } from "sveltekit-inngest/client";
   import { demoChannel } from "$lib/realtime/channels";
 
-  const { health } = getRealtimeBusState(demoChannel);
+  const { health, onMessage } = getRealtimeBusState(demoChannel);
+  let liveMessages = $state<string[]>([]);
 
+  onMessage("message", async ({ data }) => {
+    liveMessages = [data.message, ...liveMessages].slice(0, 5);
+  });
+
+  // Optional: keep the latest value around for display-oriented UI.
   const message = getRealtimeBusTopicState<typeof demoChannel, "message">(
     demoChannel,
     "message"
@@ -215,9 +224,16 @@ export const POST = createRealtimeEndpoint({
 </script>
 
 <p>Connection: {health.current?.status ?? "connecting"}</p>
+<pre>{JSON.stringify(liveMessages, null, 2)}</pre>
 <pre>{JSON.stringify(message.current, null, 2)}</pre>
 <pre>{JSON.stringify(adminMessage.current, null, 2)}</pre>
 ```
+
+Use `onMessage(...)` as the default way to react to incoming full topic envelopes.
+`getRealtimeBusTopicState(...)` is deprecated: use `onMessage(...)`. This will be
+removed in a future major release.
+If you still need a retained latest-value read for rendering, prefer
+`getRealtimeBusTopicJson(...)`.
 
 ### 8. Send an event
 
@@ -249,6 +265,7 @@ Runtime exports:
 - `RealtimeManager`
 - `getRealtimeBus()`
 - `getRealtimeBusState(channel, channelParams?)`
+- `onMessage(topic, handler)` via `getRealtimeBusState(...)`
 - `getRealtimeBusTopicJson(channel, topic, options?)`
 - `getRealtimeBusTopicState(channel, topic, options?)`
 
@@ -258,6 +275,7 @@ Type exports include:
 - `RealtimeClientFailureContext`, `RealtimeClientFailureSource`
 - `HealthPayload`, `HealthStatus`
 - `TopicKey<TChannel>`, `TopicData<TChannel, TTopic>`
+- `RealtimeBusState<TChannel>`, `RealtimeTopicHandler<TChannel, TTopic>`, `RealtimeUnsubscribe`
 - `RealtimeTopicEnvelope`, `RealtimeTopicMessage`
 - `RealtimeRequestParams`, `ReactiveCurrent`, `RealtimeTopicState`, `RealtimeHealthState`
 
@@ -402,18 +420,36 @@ Throws if called outside a `RealtimeManager` subtree.
 
 #### `getRealtimeBusState(channel, channelParams?)`
 
+Preferred client entrypoint for consuming realtime messages.
+
 Returns channel-scoped context:
 
 - `channelId`
 - `topics`
 - `select(eventName)` from `sveltekit-sse`
 - `health` as Svelte 5 state wrapper (`health.current`)
+- `onMessage(topic, handler)` for future-only typed topic listeners
 
 Throws when the requested channel is not currently active.
 
+`onMessage(topic, handler)`:
+
+- receives the full typed realtime envelope for the selected topic
+- returns an unsubscribe function
+- auto-cleans on component destroy when registered during component setup
+- skips the retained initial store value, so it only fires for future messages
+- logs thrown/rejected handler errors without affecting connection health
+
+Use `onMessage(...)` by default for side effects, orchestration, and live event
+handling.
+
+Use `getRealtimeBusTopicJson(...)` when you want retained latest-value reads for
+UI rendering.
+
 #### `getRealtimeBusTopicJson(channel, topic, options?)`
 
-Returns `Readable<TOutput | null>` for the latest parsed message matching the selected topic.
+Optional retained-value helper. Returns `Readable<TOutput | null>` for the latest
+parsed message matching the selected topic.
 
 `options`:
 
@@ -425,7 +461,10 @@ Returns `Readable<TOutput | null>` for the latest parsed message matching the se
 
 #### `getRealtimeBusTopicState(channel, topic, options?)`
 
-Same behavior as `getRealtimeBusTopicJson`, but wrapped in Svelte 5 state-first shape:
+Deprecated: use `onMessage(...)`. This will be removed in a future major release.
+
+Legacy retained-value helper. Same behavior as `getRealtimeBusTopicJson`, but
+wrapped in Svelte 5 state-first shape:
 
 - read with `.current`
 - type: `ReactiveCurrent<TOutput | null>`
