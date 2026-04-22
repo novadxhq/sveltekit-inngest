@@ -22,7 +22,7 @@ want the latest value as Svelte 5 state (`.current`) instead of `$store` syntax.
 - Optional per-message reauthorization before each emit
 - Optional server and client failure callbacks
 - Preferred typed message handling with `getRealtimeBusState(...).onMessage(...)`
-- Optional retained topic-state helpers with `getRealtimeBusTopicState()`
+- Optional retained-value reads with `getRealtimeBusTopicJson()` and deprecated `getRealtimeBusTopicState()`
 - Multi-subscription diffing in `RealtimeManager`
 - Built-in health events: `connecting`, `connected`, `degraded`
 
@@ -207,8 +207,8 @@ export const POST = createRealtimeEndpoint({
   const { health, onMessage } = getRealtimeBusState(demoChannel);
   let liveMessages = $state<string[]>([]);
 
-  onMessage("message", async (payload) => {
-    liveMessages = [payload.message, ...liveMessages].slice(0, 5);
+  onMessage("message", async ({ data }) => {
+    liveMessages = [data.message, ...liveMessages].slice(0, 5);
   });
 
   // Optional: keep the latest value around for display-oriented UI.
@@ -229,9 +229,11 @@ export const POST = createRealtimeEndpoint({
 <pre>{JSON.stringify(adminMessage.current, null, 2)}</pre>
 ```
 
-Use `onMessage(...)` as the default way to react to incoming topic payloads.
-Reach for `getRealtimeBusTopicState(...)` or `getRealtimeBusTopicJson(...)` when
-you specifically want a retained "latest message" value for rendering.
+Use `onMessage(...)` as the default way to react to incoming full topic envelopes.
+`getRealtimeBusTopicState(...)` is deprecated: use `onMessage(...)`. This will be
+removed in a future major release.
+If you still need a retained latest-value read for rendering, prefer
+`getRealtimeBusTopicJson(...)`.
 
 ### 8. Send an event
 
@@ -432,7 +434,7 @@ Throws when the requested channel is not currently active.
 
 `onMessage(topic, handler)`:
 
-- receives only the typed topic `data` payload, not the full envelope
+- receives the full typed realtime envelope for the selected topic
 - returns an unsubscribe function
 - auto-cleans on component destroy when registered during component setup
 - skips the retained initial store value, so it only fires for future messages
@@ -441,8 +443,8 @@ Throws when the requested channel is not currently active.
 Use `onMessage(...)` by default for side effects, orchestration, and live event
 handling.
 
-Use `getRealtimeBusTopicJson(...)` or `getRealtimeBusTopicState(...)` when you
-want retained latest-value reads for UI rendering.
+Use `getRealtimeBusTopicJson(...)` when you want retained latest-value reads for
+UI rendering.
 
 #### `getRealtimeBusTopicJson(channel, topic, options?)`
 
@@ -459,7 +461,9 @@ parsed message matching the selected topic.
 
 #### `getRealtimeBusTopicState(channel, topic, options?)`
 
-Optional retained-value helper. Same behavior as `getRealtimeBusTopicJson`, but
+Deprecated: use `onMessage(...)`. This will be removed in a future major release.
+
+Legacy retained-value helper. Same behavior as `getRealtimeBusTopicJson`, but
 wrapped in Svelte 5 state-first shape:
 
 - read with `.current`

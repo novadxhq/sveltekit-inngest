@@ -64,13 +64,13 @@
     ].slice(0, 6);
   };
 
-  onMessage("message", async (payload) => {
-    alert("message received in onMessage listener: " + payload.message);
-    pushLiveListenerEntry("message", payload.message);
+  onMessage("message", async ({ data }) => {
+    alert("message received in onMessage listener: " + data.message);
+    pushLiveListenerEntry("message", data.message);
   });
 
-  onMessage("admin-message", async (payload) => {
-    pushLiveListenerEntry("admin-message", payload.message);
+  onMessage("admin-message", async ({ data }) => {
+    pushLiveListenerEntry("admin-message", data.message);
   });
 
   const readRole = (): "admin" | "member" => {

@@ -43,17 +43,17 @@ type TopicJsonOptions<
    * to clear it.
    */
   or?: (
-    payload: JsonPredicatePayload<RealtimeTopicMessage<TChannel, TTopic>>
+    payload: JsonPredicatePayload<RealtimeTopicMessage<TChannel, TTopic>>,
   ) => RealtimeTopicMessage<TChannel, TTopic> | null;
 };
 
 const resolveChannel = <TInput extends ChannelInput>(
   input: TInput,
-  channelParam?: string
+  channelParam?: string,
 ): ResolvedChannel<TInput> => {
   if (typeof input === "function") {
     const channelFactory = input as unknown as (
-      value?: string
+      value?: string,
     ) => ResolvedChannel<TInput>;
     return channelParam === undefined
       ? channelFactory()
@@ -81,7 +81,7 @@ export function getRealtimeBus(): RealtimeBusContextValue {
   const context = getRealtimeContext();
   if (!context) {
     throw new Error(
-      "getRealtimeBus() requires <RealtimeManager> in the component tree."
+      "getRealtimeBus() requires <RealtimeManager> in the component tree.",
     );
   }
 
@@ -90,7 +90,7 @@ export function getRealtimeBus(): RealtimeBusContextValue {
 
 const getChannelContext = <TChannel extends ChannelInput>(
   channel: TChannel,
-  channelParams?: string
+  channelParams?: string,
 ): RealtimeBusChannelContextValue => {
   const context = getRealtimeBus();
   const channels = context.channelsState ?? fromStore(context.channels);
@@ -100,7 +100,7 @@ const getChannelContext = <TChannel extends ChannelInput>(
   if (!channelContext) {
     const activeChannels = Object.keys(channels.current);
     throw new Error(
-      `Realtime channel "${channelId}" is not active. Active channels: ${activeChannels.join(", ") || "none"}.`
+      `Realtime channel "${channelId}" is not active. Active channels: ${activeChannels.join(", ") || "none"}.`,
     );
   }
 
@@ -108,7 +108,7 @@ const getChannelContext = <TChannel extends ChannelInput>(
 };
 
 const createParsedMessagesFactory = <TChannel extends ChannelInput>(
-  channelContext: RealtimeBusChannelContextValue
+  channelContext: RealtimeBusChannelContextValue,
 ) => {
   let parsedMessages:
     | Readable<RealtimeTopicMessage<TChannel, TopicKey<TChannel>> | null>
@@ -117,16 +117,11 @@ const createParsedMessagesFactory = <TChannel extends ChannelInput>(
   return () => {
     if (parsedMessages) return parsedMessages;
 
-    parsedMessages =
-      channelContext.select("message").json<
+    parsedMessages = channelContext
+      .select("message")
+      .json<
         RealtimeTopicMessage<TChannel, TopicKey<TChannel>>
-      >(
-        ({
-          previous,
-        }: {
-          previous: RealtimeTopicMessage<TChannel, TopicKey<TChannel>> | null;
-        }) => previous ?? null
-      );
+      >(({ previous }: { previous: RealtimeTopicMessage<TChannel, TopicKey<TChannel>> | null }) => previous ?? null);
 
     return parsedMessages;
   };
@@ -146,8 +141,8 @@ const createParsedMessagesFactory = <TChannel extends ChannelInput>(
  * ```ts
  * const { health, onMessage } = getRealtimeBusState(demoChannel);
  *
- * onMessage("message", async (payload) => {
- *   console.log(payload.message);
+ * onMessage("message", async ({ data }) => {
+ *   console.log(data.message);
  * });
  * ```
  *
@@ -157,10 +152,11 @@ const createParsedMessagesFactory = <TChannel extends ChannelInput>(
  */
 export function getRealtimeBusState<TChannel extends ChannelInput>(
   channel: TChannel,
-  channelParams?: string
+  channelParams?: string,
 ): RealtimeBusState<TChannel> {
   const channelContext = getChannelContext(channel, channelParams);
-  const getParsedMessages = createParsedMessagesFactory<TChannel>(channelContext);
+  const getParsedMessages =
+    createParsedMessagesFactory<TChannel>(channelContext);
   const listenerStops = new Set<RealtimeUnsubscribe>();
 
   try {
@@ -180,7 +176,7 @@ export function getRealtimeBusState<TChannel extends ChannelInput>(
     health: channelContext.healthState ?? fromStore(channelContext.health),
     onMessage: <TTopic extends TopicKey<TChannel>>(
       topic: TTopic,
-      handler: RealtimeTopicHandler<TChannel, TTopic>
+      handler: RealtimeTopicHandler<TChannel, TTopic>,
     ) => {
       let skipInitial = true;
 
@@ -194,10 +190,10 @@ export function getRealtimeBusState<TChannel extends ChannelInput>(
 
         const typedMessage = message as RealtimeTopicMessage<TChannel, TTopic>;
 
-        void Promise.resolve(handler(typedMessage.data)).catch((error) => {
+        void Promise.resolve(handler(typedMessage)).catch((error) => {
           console.error(
             `[sveltekit-inngest] onMessage handler failed for "${channelContext.channelId}:${String(topic)}".`,
-            error
+            error,
           );
         });
       });
@@ -247,20 +243,24 @@ export function getRealtimeBusTopicJson<
 >(
   channel: TChannel,
   topic: TTopic,
-  options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
+  options: TopicJsonOptions<TChannel, TTopic, TOutput> = {},
 ): Readable<TOutput | null> {
   const { select } = getChannelContext(channel, options.channelParams);
 
-  const parsedMessages = select("message").json<RealtimeTopicMessage<TChannel, TTopic>>(
+  const parsedMessages = select("message").json<
+    RealtimeTopicMessage<TChannel, TTopic>
+  >(
     options.or ??
-      (({ previous }: { previous: RealtimeTopicMessage<TChannel, TTopic> | null }) =>
-        previous ?? null)
+      (({
+        previous,
+      }: {
+        previous: RealtimeTopicMessage<TChannel, TTopic> | null;
+      }) => previous ?? null),
   );
 
   const mapMessage =
     options.map ??
-    ((message: RealtimeTopicMessage<TChannel, TTopic>) =>
-      message as TOutput);
+    ((message: RealtimeTopicMessage<TChannel, TTopic>) => message as TOutput);
 
   let previous: TOutput | null = null;
 
@@ -275,6 +275,7 @@ export function getRealtimeBusTopicJson<
 }
 
 /**
+ * @deprecated Use `onMessage(...)`. This will be removed in a future major release.
  * Returns the latest topic value wrapped in Svelte 5's `.current`-style access.
  *
  * This is the state-first variant of `getRealtimeBusTopicJson(...)`.
@@ -301,9 +302,9 @@ export function getRealtimeBusTopicState<
 >(
   channel: TChannel,
   topic: TTopic,
-  options: TopicJsonOptions<TChannel, TTopic, TOutput> = {}
+  options: TopicJsonOptions<TChannel, TTopic, TOutput> = {},
 ): RealtimeTopicState<TOutput> {
   return fromStore(
-    getRealtimeBusTopicJson<TChannel, TTopic, TOutput>(channel, topic, options)
+    getRealtimeBusTopicJson<TChannel, TTopic, TOutput>(channel, topic, options),
   );
 }

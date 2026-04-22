@@ -123,8 +123,8 @@ export type RealtimeTopicState<T> = ReactiveCurrent<T | null>;
  *
  * @example
  * ```ts
- * const stop = onMessage("message", (payload) => {
- *   console.log(payload.message);
+ * const stop = onMessage("message", ({ data }) => {
+ *   console.log(data.message);
  * });
  *
  * stop();
@@ -135,9 +135,9 @@ export type RealtimeUnsubscribe = () => void;
 /**
  * Topic listener registered through `getRealtimeBusState(...).onMessage(...)`.
  *
- * The handler receives only the typed `message.data` payload for the selected topic.
- * It is intentionally payload-first so your application code can focus on the
- * business value being emitted instead of unpacking the full SSE envelope.
+ * The handler receives the full typed realtime envelope for the selected topic.
+ * Access the validated topic payload through `message.data`, or destructure it
+ * alongside the other envelope metadata when needed.
  *
  * Handlers may be synchronous or asynchronous. Async work is fire-and-forget:
  * the realtime connection will continue delivering future messages without waiting
@@ -146,18 +146,18 @@ export type RealtimeUnsubscribe = () => void;
  * @example
  * ```ts
  * const handleMessage: RealtimeTopicHandler<typeof demoChannel, "message"> = async (
- *   payload
+ *   message
  * ) => {
- *   console.log(payload.message);
+ *   console.log(message.data.message);
  * };
  * ```
  *
- * @param payload Typed payload for the selected topic.
+ * @param message Typed realtime envelope for the selected topic.
  */
 export type RealtimeTopicHandler<
   TChannel extends ChannelInput,
   TTopic extends TopicKey<TChannel>,
-> = (payload: TopicData<TChannel, TTopic>) => void | Promise<void>;
+> = (message: RealtimeTopicMessage<TChannel, TTopic>) => void | Promise<void>;
 
 /**
  * Function used by `RealtimeBusState.onMessage` to listen for future topic messages.
@@ -171,7 +171,7 @@ export type RealtimeTopicHandler<
  *
  * Important behavior:
  * - The callback only receives future messages after registration.
- * - The callback receives `payload` only, not the full envelope.
+ * - The callback receives the full typed realtime envelope.
  * - Cleanup is automatic when registered during component setup.
  * - You can also manually stop the listener using the returned function.
  * - Thrown or rejected handler errors are logged locally and do not degrade the stream.
@@ -181,8 +181,8 @@ export type RealtimeTopicHandler<
  * ```ts
  * const { onMessage } = getRealtimeBusState(demoChannel);
  *
- * onMessage("message", (payload) => {
- *   console.log(payload.message);
+ * onMessage("message", ({ data }) => {
+ *   console.log(data.message);
  * });
  * ```
  *
@@ -192,8 +192,8 @@ export type RealtimeTopicHandler<
  * const { onMessage } = getRealtimeBusState(demoChannel);
  * let activity = $state<string[]>([]);
  *
- * onMessage("message", (payload) => {
- *   activity = [payload.message, ...activity].slice(0, 5);
+ * onMessage("message", ({ data }) => {
+ *   activity = [data.message, ...activity].slice(0, 5);
  * });
  * ```
  *
@@ -202,8 +202,8 @@ export type RealtimeTopicHandler<
  * ```ts
  * const { onMessage } = getRealtimeBusState(demoChannel);
  *
- * const stop = onMessage("admin-message", async (payload) => {
- *   await auditAdminMessage(payload.message);
+ * const stop = onMessage("admin-message", async ({ data }) => {
+ *   await auditAdminMessage(data.message);
  * });
  *
  * stop();
@@ -214,8 +214,8 @@ export type RealtimeTopicHandler<
  * ```ts
  * const { onMessage } = getRealtimeBusState(userChannel, "alice");
  *
- * onMessage("message", (payload) => {
- *   console.log("user channel", payload.message);
+ * onMessage("message", ({ data }) => {
+ *   console.log("user channel", data.message);
  * });
  * ```
  */
@@ -309,8 +309,8 @@ export type RealtimeManagerProps = {
  * ```ts
  * const realtime = getRealtimeBusState(demoChannel);
  *
- * realtime.onMessage("message", (payload) => {
- *   console.log(payload.message);
+ * realtime.onMessage("message", ({ data }) => {
+ *   console.log(data.message);
  * });
  *
  * console.log(realtime.health.current?.status);
@@ -331,8 +331,8 @@ export type RealtimeBusState<TChannel extends ChannelInput> = {
    * ```ts
    * const realtime = getRealtimeBusState(demoChannel);
    *
-   * realtime.onMessage("message", (payload) => {
-   *   console.log(payload.message);
+   * realtime.onMessage("message", ({ data }) => {
+   *   console.log(data.message);
    * });
    * ```
    *
@@ -341,8 +341,8 @@ export type RealtimeBusState<TChannel extends ChannelInput> = {
    * const { onMessage } = getRealtimeBusState(demoChannel);
    * let activity = $state<string[]>([]);
    *
-   * onMessage("message", (payload) => {
-   *   activity = [payload.message, ...activity].slice(0, 5);
+   * onMessage("message", ({ data }) => {
+   *   activity = [data.message, ...activity].slice(0, 5);
    * });
    * ```
    *
@@ -350,8 +350,8 @@ export type RealtimeBusState<TChannel extends ChannelInput> = {
    * ```ts
    * const { onMessage } = getRealtimeBusState(userChannel, "alice");
    *
-   * const stop = onMessage("message", async (payload) => {
-   *   await auditMessage(payload.message);
+   * const stop = onMessage("message", async ({ data }) => {
+   *   await auditMessage(data.message);
    * });
    *
    * stop();
